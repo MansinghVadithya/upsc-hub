@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>UPSC Current Affairs Hub</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#08080F;color:#E2E2EE;font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
+  ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:#0f0f1a}::-webkit-scrollbar-thumb{background:#333}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .fade{animation:fadeIn 0.3s ease}
+  input,textarea{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#E2E2EE;border-radius:8px;padding:10px 14px;font-size:13px;width:100%;outline:none;font-family:inherit}
+  input:focus,textarea:focus{border-color:rgba(129,140,248,0.5)}
+  button{cursor:pointer;font-family:inherit}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback,useRef} = React;
+
+const DEFAULT_GAS = "https://script.google.com/macros/s/AKfycbyNkPZMA2jRHFMWAGupFoteO9F3olJqO0Ef-k4XaSffHYbCCpknRCUaUEgBppFhuNM9ig/exec";
+const GEMINI_MODEL = "gemini-2.5-flash";
+const CACHE_TTL = 2*60*60*1000;
+
+const SOURCES = {
+  pib:   {id:"pib",   name:"PIB",   fullName:"Press Information Bureau",            color:"#FF6B35",icon:"🏛️"},
+  rbi:   {id:"rbi",   name:"RBI",   fullName:"Reserve Bank of India",               color:"#4F9EFF",icon:"🏦"},
+  sebi:  {id:"sebi",  name:"SEBI",  fullName:"Securities & Exchange Board of India", color:"#2DD4BF",icon:"📈"},
+  gnews: {id:"gnews", name:"Google News",fullName:"Google News — India",            color:"#EA4335",icon:"📰"}
+};
+
+const SLIDE_BG = {
+  title:"linear-gradient(145deg,#1e1b4b,#312e81,#4338ca)",
+  what: "linear-gradient(145deg,#0c4a6e,#075985,#0284c7)",
+  why:  "linear-gradient(145deg,#451a03,#92400e,#b45309)",
+  upsc: "linear-gradient(145deg,#052e16,#065f46,#059669)",
+  save: "linear-gradient(145deg,#2e1065,#5b21b6,#7c3aed)"
+};
+
+const normType = (t="") => {
+  const s=t.toLowerCase();
+  if(s.includes("hook")||s.includes("title")||s.includes("intro")) return "title";
+  if(s.includes("what")||s.includes("happened")) return "what";
+  if(s.includes("why")||s.includes("matter")) return "why";
+  if(s.includes("upsc")||s.includes("angle")) return "upsc";
+  return "save";
+};
+
+// Map GS tags to Unsplash search keywords for Slide 1 background
+const getUnsplashKw = (gsTags=[], title="") => {
+  const t=title.toLowerCase();
+  if(gsTags.some(g=>g.includes("Defence"))||/missile|drdo|army|navy|defence/.test(t)) return "military-technology-india-defence";
+  if(gsTags.some(g=>g.includes("Economy"))||/bank|rbi|sebi|budget|gdp|finance/.test(t)) return "economy-finance-india-banking";
+  if(gsTags.some(g=>g.includes("Environment"))||/climate|forest|wildlife|carbon/.test(t)) return "environment-nature-green-india";
+  if(gsTags.some(g=>g.includes("S&T"))||/isro|space|ai|digital|tech|science/.test(t)) return "technology-science-innovation-india";
+  if(gsTags.some(g=>g.includes("Polity"))||/parliament|election|court|constitution/.test(t)) return "parliament-governance-democracy-india";
+  if(gsTags.some(g=>g.includes("IR"))||/bilateral|summit|diplomacy|g20|foreign/.test(t)) return "diplomacy-world-international-india";
+  if(gsTags.some(g=>g.includes("Agriculture"))||/farmer|crop|kisan|msp/.test(t)) return "agriculture-farming-rural-india";
+  if(gsTags.some(g=>g.includes("Social"))||/health|education|scheme|welfare/.test(t)) return "education-health-society-india";
+  return "india-current-affairs-government-policy";
+};
+
+// ── Helpers ─────────────────────────────────────────────────────────
+const ls  = (k,v) => {try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v);}catch{}};
+const lsJ = (k,v) => {try{if(v===undefined){const r=localStorage.getItem(k);return r?JSON.parse(r):null;}localStorage.setItem(k,JSON.stringify(v));}catch{return null;}};
+const htmlDecode = s=>(s||"").replace(/<[^>]*>/g,"").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&nbsp;/g," ").trim();
+const MONTHS={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+const toTs = ds=>{if(!ds)return null;const d=new Date(ds);if(!isNaN(d.getTime()))return d.getTime();const m=ds.match(/(\d{1,2})\s+(\w{3})\s+(\d{4})/i);if(m){const mo=MONTHS[m[2].toLowerCase().slice(0,3)];if(mo!=null)return new Date(+m[3],mo,+m[1]).getTime();}return null;};
+const fmtAge = ms=>{const m=Math.floor(ms/60000);return m<1?"just now":m<60?`${m}m ago`:`${Math.floor(m/60)}h ago`;};
+
+const guessGS = text=>{
+  const t=text.toLowerCase();const tags=new Set();
+  if(/economy|gdp|fiscal|budget|inflation|tax|finance|trade|fdi|monetary|banking|nbfc|sebi|market|bond/.test(t)) tags.add("GS3—Economy");
+  if(/defence|military|army|navy|missile|drdo|terror/.test(t)) tags.add("GS3—Defence");
+  if(/environment|climate|forest|pollution|biodiversity|carbon|emission|ramsar/.test(t)) tags.add("GS3—Environment");
+  if(/agriculture|farmer|crop|msp|irrigation|kisan/.test(t)) tags.add("GS3—Agriculture");
+  if(/space|isro|technology|innovation|digital|quantum|nuclear|artificial intelligence/.test(t)) tags.add("GS3—S&T");
+  if(/constitution|parliament|election|court|lok sabha|rajya sabha|supreme court/.test(t)) tags.add("GS2—Polity");
+  if(/governance|scheme|policy|ministry|government/.test(t)) tags.add("GS2—Governance");
+  if(/health|vaccine|disease|ayushman|education|nep/.test(t)) tags.add("GS2—Social");
+  if(/foreign|bilateral|treaty|summit|g20|international|mou/.test(t)) tags.add("GS2—IR");
+  if(/disaster|ndma|flood|cyclone/.test(t)) tags.add("GS3—Disaster");
+  return [...tags].slice(0,3);
+};
+
+const parseRSS = xml=>{
+  try{
+    const doc=new DOMParser().parseFromString(xml,"text/xml");
+    if(doc.querySelector("parsererror"))return[];
+    return[...doc.querySelectorAll("item")].map((item,i)=>{
+      const g=tag=>{const el=item.querySelector(tag);return el?el.textContent.replace(/<!\[CDATA\[|\]\]>/g,"").trim():"";};
+      const pub=g("pubDate");const ts=pub?new Date(pub).getTime():Date.now()-i*3600000;
+      return{id:g("guid")||g("link")||`i${i}`,title:htmlDecode(g("title"))||"No Title",description:htmlDecode(g("description")).slice(0,400),link:g("link"),date:pub?new Date(pub).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}):"",timestamp:ts};
+    });
+  }catch{return[];}
+};
+
+const cK=sid=>`upsc_feed_${sid}_v2`;
+const getCache=sid=>{const c=lsJ(cK(sid));return c?{...c,age:Date.now()-c.ts,stale:Date.now()-c.ts>CACHE_TTL}:null;};
+const setCache=(sid,articles,mode)=>lsJ(cK(sid),{articles,mode,ts:Date.now()});
+const BM_KEY="upsc_bm_v1";
+const getBMs=()=>lsJ(BM_KEY)||[];
+const setBMs=bms=>lsJ(BM_KEY,bms);
+
+// ── Gemini API ───────────────────────────────────────────────────────
+const geminiCall=async(apiKey,prompt,tools=null)=>{
+  const body={
+    contents:[{parts:[{text:prompt}]}],
+    generationConfig:{temperature:0.2,maxOutputTokens:1200,thinkingConfig:{thinkingBudget:0}}
+  };
+  if(!tools) body.generationConfig.responseMimeType="application/json";
+  if(tools) body.tools=tools;
+  const res=await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}
+  );
+  if(res.status===429)throw new Error("Rate limited — wait 1 min and retry.");
+  if(res.status===400)throw new Error("Invalid API key — check Settings.");
+  if(!res.ok)throw new Error(`API error ${res.status}`);
+  const data=await res.json();
+  if(data.error)throw new Error(data.error.message||"Gemini error");
+  const text=(data.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("");
+  if(!text)throw new Error("Empty response");
+  return text;
+};
+
+const extractJSONObj=text=>{
+  const tryP=s=>{try{return JSON.parse(s);}catch{return null;}};
+  let clean=text.replace(/```json|```/gi,"").trim();
+  let r=tryP(clean);if(r&&typeof r==="object"&&!Array.isArray(r))return r;
+  const m=clean.match(/\{[\s\S]*\}/);if(m){r=tryP(m[0]);if(r)return r;}
+  throw new Error("Parse failed — retry");
+};
+const extractJSONArr=text=>{
+  const tryP=s=>{try{return JSON.parse(s);}catch{return null;}};
+  let clean=text.replace(/```json|```/gi,"").trim();
+  let r=tryP(clean);if(r&&Array.isArray(r))return r;
+  const m=clean.match(/\[[\s\S]*\]/);if(m){r=tryP(m[0]);if(r)return r;}
+  throw new Error("Parse failed — retry");
+};
+
+// ── Styles ────────────────────────────────────────────────────────────
+const C={
+  wrap:  {maxWidth:720,margin:"0 auto",padding:"20px 16px"},
+  topBar:{padding:"12px 18px",borderBottom:"1px solid rgba(255,255,255,0.07)",display:"flex",alignItems:"center",gap:12,position:"sticky",top:0,background:"rgba(8,8,15,0.97)",backdropFilter:"blur(12px)",zIndex:100},
+  card:  {background:"rgba(255,255,255,0.035)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:14},
+  ghost: {background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.09)",color:"#E2E2EE",padding:"8px 15px",borderRadius:9,fontSize:13,fontWeight:500},
+  btn:   g=>({background:g,border:"none",color:"#fff",padding:"12px 20px",borderRadius:10,fontSize:13,fontWeight:600}),
+  pill:  col=>({fontSize:10,fontWeight:600,background:col+"22",color:col,padding:"3px 8px",borderRadius:20}),
+  label: {fontSize:10,letterSpacing:1.5,textTransform:"uppercase",color:"rgba(255,255,255,0.35)",marginBottom:8,fontWeight:600}
+};
+
+// ── App ───────────────────────────────────────────────────────────────
+function App(){
+  const [view,setView]=useState("home");
+  const [source,setSrc]=useState(null);
+  const [articles,setArts]=useState([]);
+  const [feedMode,setFeedMode]=useState("");
+  const [feedAge,setFeedAge]=useState(0);
+  const [feedStatus,setFeedStatus]=useState("");
+  const [feedError,setFeedError]=useState(null);
+  const [loadingFeed,setLoadingFeed]=useState(false);
+  const [article,setArticle]=useState(null);
+  const [pasteText,setPasteText]=useState("");
+  const [summary,setSummary]=useState(null);
+  const [loadingSum,setLoadingSum]=useState(false);
+  const [sumStatus,setSumStatus]=useState("");
+  const [carousel,setCarousel]=useState(null);
+  const [loadingCar,setLoadingCar]=useState(false);
+  const [slide,setSlide]=useState(0);
+  const [showCar,setShowCar]=useState(false);
+  const [bms,setBmsState]=useState(getBMs());
+  const [toast,setToast]=useState("");
+  const [driveToken,setDriveToken]=useState(null);
+  const [apiKey,setApiKey]=useState(ls("upsc_apikey")||"");
+  const [apiInput,setApiInput]=useState(ls("upsc_apikey")||"");
+  const [gasInput,setGasInput]=useState(ls("upsc_gasurl")||DEFAULT_GAS);
+  const [cidInput,setCidInput]=useState(ls("upsc_drivecid")||"");
+  const tokenClientRef=useRef(null);
+
+  const notify=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
+  useEffect(()=>{const cid=ls("upsc_drivecid");if(cid)initGIS(cid);},[]);
+
+  const initGIS=cid=>{
+    if(!cid)return;
+    const load=()=>{try{tokenClientRef.current=window.google?.accounts?.oauth2?.initTokenClient({client_id:cid,scope:"https://www.googleapis.com/auth/drive.file",callback:r=>{if(r.error){notify("❌ Google auth failed");return;}setDriveToken(r.access_token);notify("✅ Drive connected!");}});}catch{}};
+    if(window.google?.accounts?.oauth2){load();return;}
+    const s=document.createElement("script");s.src="https://accounts.google.com/gsi/client";s.onload=load;document.head.appendChild(s);
+  };
+
+  // ── Feed fetch (24-hour filter) ────────────────────────────────────
+  const fetchFeed=useCallback(async(sid,force=false)=>{
+    setLoadingFeed(true);setFeedError(null);setFeedStatus("");setFeedMode("");setArts([]);
+    if(!force){const c=getCache(sid);if(c&&!c.stale){setArts(c.articles);setFeedMode(c.mode);setFeedAge(c.age);setLoadingFeed(false);return;}}
+    const px=ls("upsc_gasurl")||DEFAULT_GAS;
+    if(px){
+      try{
+        setFeedStatus("Fetching live feed…");
+        const res=await fetch(`${px}?source=${sid}`);
+        if(!res.ok)throw new Error(`HTTP ${res.status}`);
+        const xml=await res.text();
+        if(xml.trim().startsWith("{"))throw new Error("Proxy error");
+        const rawItems=parseRSS(xml);
+        const seenTitles=new Set();
+        const all=rawItems.filter(i=>{const k=i.title.toLowerCase().slice(0,45);if(seenTitles.has(k))return false;seenTitles.add(k);return true;});
+        if(all.length>0){
+          const day=Date.now()-24*3600000;
+          const f=all.filter(i=>i.timestamp>=day);
+          const final=f.length>=3?f:all.slice(0,20);
+          setArts(final);setFeedMode("live");setFeedAge(0);
+          setCache(sid,final,"live");setFeedStatus("");setLoadingFeed(false);return;
+        }
+      }catch(e){console.warn("GAS:",e.message);}
+    }
+    if(!force){const c=getCache(sid);if(c){setArts(c.articles);setFeedMode("stale");setFeedAge(c.age);setFeedStatus("");setLoadingFeed(false);return;}}
+    const key=ls("upsc_apikey");
+    if(!key){setFeedError("No API key — go to ⚙️ Settings.");setLoadingFeed(false);return;}
+    setFeedStatus("Loading from AI knowledge base…");
+    const aiP={
+      pib:"List 10 real recent PIB India press releases (2024-2025) relevant for UPSC.",
+      rbi:"List 10 real recent RBI announcements (2024-2025) relevant for UPSC.",
+      sebi:"List 10 real recent SEBI circulars (2024-2025) relevant for UPSC.",
+      gnews:"List 10 major recent India news stories (2024-2025) relevant for UPSC aspirants covering governance, economy, defence, environment, science."
+    };
+    try{
+      const raw=await geminiCall(key,aiP[sid]+" Output ONLY a JSON array:\n[{\"id\":\"1\",\"title\":\"title\",\"description\":\"2-sentence summary\",\"link\":\"url or empty\",\"date\":\"DD Mon YYYY\"}]");
+      const parsed=extractJSONArr(raw);
+      const items=parsed.map((item,i)=>({id:item.id||String(i+1),title:(item.title||"").trim(),description:(item.description||"").trim(),link:item.link||"",date:item.date||"",timestamp:toTs(item.date)||(Date.now()-i*86400000*30),aiGenerated:true}));
+      setArts(items);setFeedMode("ai");setFeedAge(0);setCache(sid,items,"ai");setFeedStatus("");
+    }catch(e){setFeedError(e.message);setFeedStatus("");}
+    setLoadingFeed(false);
+  },[]);
+
+  const openSource=sid=>{setSrc(sid);setView("source");fetchFeed(sid);};
+  const openArticle=art=>{setArticle(art);setSummary(null);setCarousel(null);setShowCar(false);setSlide(0);setPasteText("");setView("article");};
+
+  // ── Generate Summary ───────────────────────────────────────────────
+  const genSummary=async()=>{
+    const key=ls("upsc_apikey");if(!key){notify("Add API key in Settings");return;}
+    setLoadingSum(true);setSumStatus("");
+    try{
+      const hasPaste=pasteText.trim().length>100;
+      let prompt,tools=null;
+      const schema=
+        '{"summary":"2-3 sentences — ONLY new specific facts (names/dates/numbers) NOT repeated in keyPoints",' +
+        '"keyPoints":["NEW fact 1 not in summary","NEW fact 2","NEW fact 3","NEW fact 4","NEW fact 5"],' +
+        '"whyItMatters":"1 sentence real-world impact",' +
+        '"upscAngle":"Paper + topic + question type (1 sentence)",' +
+        '"possibleQuestion":"One UPSC question",' +
+        '"gsTags":["GS tag"],' +
+        '"keywords":["k1","k2","k3","k4","k5"],' +
+        '"mnemonic":"trick or empty"}';
+
+      if(hasPaste){
+        setSumStatus("Analyzing pasted article…");
+        prompt="UPSC expert. Analyze for CSE. Output ONLY valid JSON under 250 words. No repetition between summary and keyPoints.\n\n"+
+          "Source: "+(SOURCES[source]?.fullName||"")+" | Date: "+article.date+"\nTitle: "+article.title+"\n\nARTICLE:\n"+pasteText.trim()+"\n\nOutput: "+schema;
+      }else{
+        setSumStatus("Searching full article via Google…");
+        tools=[{google_search:{}}];
+        prompt="UPSC expert. Search Google for: \""+article.title+"\" "+(SOURCES[source]?.fullName||"")+" "+article.date+"\n"+
+          "Read the FULL article from search results. Output ONLY valid JSON under 250 words. No repetition between summary and keyPoints.\n\n"+
+          "Output: "+schema;
+      }
+      const raw=await geminiCall(key,prompt,tools);
+      setSummary(extractJSONObj(raw));setSumStatus("");
+    }catch(e){notify("❌ "+e.message);setSumStatus("");}
+    setLoadingSum(false);
+  };
+
+  // ── Generate Carousel ──────────────────────────────────────────────
+  const genCarousel=async()=>{
+    const key=ls("upsc_apikey");if(!key||!summary){notify("Generate summary first");return;}
+    setLoadingCar(true);
+    try{
+      const srcName=SOURCES[source]?.name||"";
+      const prompt=
+        "Create a 5-slide Instagram carousel for UPSC aspirants.\n\n"+
+        "Article: "+article.title+"\nSource: "+srcName+" | "+article.date+"\n"+
+        "Summary: "+summary.summary+"\n"+
+        "Key Points: "+(summary.keyPoints||[]).join(" | ")+"\n"+
+        "UPSC Angle: "+(summary.upscAngle||"")+"\n"+
+        "Keywords: "+(summary.keywords||[]).join(", ")+"\n\n"+
+        "RULES: Every bullet = specific fact from THIS article. No generic statements. Each bullet under 12 words.\n\n"+
+        "Return JSON:\n"+
+        "slides: 5 objects — type: Hook|What Happened|Why It Matters|UPSC Angle|Exam Ready\n"+
+        "Each has: heading(8 words max), bullets(3 article-specific strings), emoji\n"+
+        "Hook: also add subline(\""+srcName+" · "+article.date+"\")\n"+
+        "UPSC Angle: also add paper(GS paper name)\n"+
+        "Exam Ready: bullets = \"TERM: definition\" format\n"+
+        "caption: 200-250 char Instagram caption with emojis and 5 hashtags\n"+
+        "ytShortScript: 60-second script for YouTube Shorts automation. Pure narration, no labels/directions. "+
+        "Start with a shocking fact or question (3 seconds). Then rapid-fire specific facts from the article (one punchy sentence each). "+
+        "End with UPSC connection and save prompt. Max 160 words. Every word must earn its place.";
+
+      const raw=await geminiCall(key,prompt);
+      setCarousel(extractJSONObj(raw));setShowCar(true);
+    }catch(e){notify("❌ "+e.message);}
+    setLoadingCar(false);
+  };
+
+  // ── Download slide ─────────────────────────────────────────────────
+  const downloadSlide=async()=>{
+    const el=document.getElementById("slide-box");
+    if(!el||!window.html2canvas){notify("Download not available");return;}
+    try{
+      notify("⏳ Preparing…");
+      const canvas=await window.html2canvas(el,{scale:2,useCORS:true,allowTaint:true,backgroundColor:null,logging:false});
+      const a=document.createElement("a");
+      a.download=`UPSC_${SOURCES[source]?.name}_slide${slide+1}.png`;
+      a.href=canvas.toDataURL("image/png");a.click();
+      notify("📥 Slide "+(slide+1)+" downloaded!");
+    }catch{notify("❌ Download failed");}
+  };
+
+  const toggleBM=()=>{
+    const all=getBMs();const has=all.find(b=>b.id===article.id);
+    const upd=has?all.filter(b=>b.id!==article.id):[{...article,source,summary:summary?.summary||"",gsTags:summary?.gsTags||guessGS(article.title),savedAt:Date.now()},...all];
+    setBMs(upd);setBmsState(upd);notify(has?"🗑️ Removed":"🔖 Saved!");
+  };
+  const isBM=id=>bms.some(b=>b.id===id);
+
+  const saveToDrive=async()=>{
+    const cid=ls("upsc_drivecid");if(!cid){notify("Add Drive Client ID in Settings");return;}
+    if(!driveToken){tokenClientRef.current?.requestAccessToken?.();return;}
+    try{
+      let fId=ls("upsc_drive_folder");
+      if(!fId){const r=await fetch("https://www.googleapis.com/drive/v3/files",{method:"POST",headers:{"Authorization":`Bearer ${driveToken}`,"Content-Type":"application/json"},body:JSON.stringify({name:"UPSC Current Affairs 2026",mimeType:"application/vnd.google-apps.folder"})});fId=(await r.json()).id;ls("upsc_drive_folder",fId);}
+      const c=`${article.title}\n${article.date} | ${SOURCES[source]?.fullName}\n\nSUMMARY\n${summary?.summary||""}\n\nKEY POINTS\n${(summary?.keyPoints||[]).map((p,i)=>`${i+1}. ${p}`).join("\n")}\n\nUPSC ANGLE\n${summary?.upscAngle||""}\n\nPOSSIBLE Q\n${summary?.possibleQuestion||""}\n\nKEYWORDS\n${(summary?.keywords||[]).join(", ")}\n\nSaved: ${new Date().toLocaleString("en-IN")}`;
+      const form=new FormData();
+      form.append("metadata",new Blob([JSON.stringify({name:`${article.date} — ${article.title.slice(0,50)}.txt`,parents:[fId]})],{type:"application/json"}));
+      form.append("file",new Blob([c],{type:"text/plain"}));
+      const up=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",{method:"POST",headers:{"Authorization":`Bearer ${driveToken}`},body:form});
+      if(up.ok)notify("✅ Saved to Drive!");else throw new Error();
+    }catch{notify("❌ Drive error");}
+  };
+
+  const exportCSV=()=>{
+    const all=getBMs();
+    const rows=[["Title","Source","Date","Summary","GS Tags","Link"],...all.map(b=>[`"${(b.title||"").replace(/"/g,"'")}"`,b.source||"",b.date||"",`"${(b.summary||"").replace(/"/g,"'")}"`,`"${(b.gsTags||[]).join("; ")}"`,b.link||""])];
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([rows.map(r=>r.join(",")).join("\n")],{type:"text/csv"}));
+    a.download=`UPSC_${new Date().toLocaleDateString("en-IN").replace(/\//g,"-")}.csv`;a.click();notify("📥 CSV exported!");
+  };
+
+  const Toast=toast?<div style={{position:"fixed",bottom:22,left:"50%",transform:"translateX(-50%)",background:"#1a1a2e",border:"1px solid rgba(255,255,255,0.15)",padding:"10px 22px",borderRadius:100,fontSize:13,zIndex:9999,whiteSpace:"nowrap",boxShadow:"0 8px 30px rgba(0,0,0,0.5)"}}>{toast}</div>:null;
+
+  const ModeBadge=({mode,age,onRefresh})=>{
+    const cfg={
+      live: {bg:"rgba(74,222,128,0.08)",border:"rgba(74,222,128,0.2)",color:"#4ADE80",icon:"🟢",label:"Live RSS",sub:`Real-time · ${fmtAge(age)}`},
+      stale:{bg:"rgba(251,191,36,0.07)",border:"rgba(251,191,36,0.2)",color:"#FBB924",icon:"🟡",label:`Cached (${fmtAge(age)})`,sub:"Showing last known data"},
+      ai:   {bg:"rgba(129,140,248,0.08)",border:"rgba(129,140,248,0.2)",color:"#818CF8",icon:"🤖",label:"AI Knowledge Base",sub:"Training data 2024–Aug 2025"}
+    };
+    const c=cfg[mode];if(!c)return null;
+    return <div className="fade" style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+      <span style={{fontSize:16}}>{c.icon}</span>
+      <div style={{flex:1}}><div style={{fontSize:12,color:c.color,fontWeight:700}}>{c.label}</div><div style={{fontSize:11,opacity:0.5,marginTop:2}}>{c.sub}</div></div>
+      {onRefresh&&<button onClick={onRefresh} style={{...C.ghost,padding:"5px 11px",fontSize:12}}>↻</button>}
+    </div>;
+  };
+
+  // ── HOME ─────────────────────────────────────────────────────────────
+  if(view==="home")return(
+    <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+      <div style={C.wrap} className="fade">
+        <div style={{marginBottom:24,paddingTop:8}}>
+          <div style={{fontSize:10,letterSpacing:3,color:"#818CF8",fontWeight:700,marginBottom:8,textTransform:"uppercase"}}>UPSC CSE 2026</div>
+          <h1 style={{fontSize:26,fontWeight:800,background:"linear-gradient(130deg,#E2E2EE 40%,#A78BFA)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:4}}>Current Affairs Hub</h1>
+          <p style={{opacity:0.35,fontSize:13}}>Live feeds · AI analysis · Instagram carousel · Drive sync</p>
+        </div>
+        {!apiKey&&<div style={{background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.25)",borderRadius:10,padding:"11px 14px",marginBottom:14,fontSize:12,color:"#F87171"}}>
+          ⚠️ No API key — go to ⚙️ Settings to add your Gemini API key.
+        </div>}
+        <div style={{display:"flex",gap:10,marginBottom:20}}>
+          <button onClick={()=>setView("bookmarks")} style={{...C.ghost,flex:1}}>🔖 Saved ({bms.length})</button>
+          <button onClick={()=>setView("settings")} style={C.ghost}>⚙️ Settings</button>
+        </div>
+        <div style={{...C.label,marginBottom:12}}>Select Source</div>
+        <div style={{display:"grid",gap:10}}>
+          {Object.values(SOURCES).map(src=>{
+            const cached=getCache(src.id);
+            return <div key={src.id} onClick={()=>openSource(src.id)}
+              style={{...C.card,padding:"16px 18px",cursor:"pointer",display:"flex",alignItems:"center",gap:14,transition:"all 0.2s"}}
+              onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,0.06)";e.currentTarget.style.borderColor=src.color+"44";}}
+              onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,0.035)";e.currentTarget.style.borderColor="rgba(255,255,255,0.07)";}}>
+              <div style={{width:44,height:44,borderRadius:10,background:src.color+"18",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>{src.icon}</div>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2}}>
+                  <span style={{fontWeight:700,fontSize:14,color:src.color}}>{src.name}</span>
+                  {cached?.mode==="live"?<span style={{...C.pill("#4ADE80"),fontSize:9}}>🟢 Live</span>:<span style={{...C.pill(src.color),fontSize:9}}>Tap to load</span>}
+                </div>
+                <div style={{fontSize:12,opacity:0.55}}>{src.fullName}</div>
+              </div>
+              <div style={{opacity:0.2,fontSize:20}}>›</div>
+            </div>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── SETTINGS ─────────────────────────────────────────────────────────
+  if(view==="settings")return(
+    <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+      <div style={C.topBar}><button style={C.ghost} onClick={()=>setView("home")}>← Home</button><span style={{fontWeight:700}}>⚙️ Settings</span></div>
+      <div style={C.wrap} className="fade">
+        <div style={{...C.card,padding:20,marginBottom:12}}>
+          <h3 style={{fontSize:14,fontWeight:700,marginBottom:12}}>🔑 Gemini API Key</h3>
+          <input type="password" value={apiInput} onChange={e=>setApiInput(e.target.value)} placeholder="AIza..." style={{marginBottom:10}}/>
+          <button onClick={()=>{ls("upsc_apikey",apiInput);setApiKey(apiInput);notify("✅ Saved!");}} style={{...C.btn("linear-gradient(135deg,#6366F1,#8B5CF6)"),width:"100%"}}>Save API Key</button>
+        </div>
+        <div style={{...C.card,padding:20,marginBottom:12}}>
+          <h3 style={{fontSize:14,fontWeight:700,marginBottom:12}}>⚡ GAS Proxy URL</h3>
+          <input value={gasInput} onChange={e=>setGasInput(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec" style={{marginBottom:10}}/>
+          <button onClick={()=>{ls("upsc_gasurl",gasInput);notify("✅ Saved!");}} style={{...C.btn("linear-gradient(135deg,#10B981,#059669)"),width:"100%"}}>Save Proxy URL</button>
+        </div>
+        <div style={{...C.card,padding:20}}>
+          <h3 style={{fontSize:14,fontWeight:700,marginBottom:12}}>🔗 Google Drive Sync</h3>
+          {driveToken&&<div style={{background:"rgba(74,222,128,0.08)",border:"1px solid rgba(74,222,128,0.2)",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:11,color:"#4ADE80"}}>✅ Connected</div>}
+          <input value={cidInput} onChange={e=>setCidInput(e.target.value)} placeholder="xxxxxxxx.apps.googleusercontent.com" style={{marginBottom:10}}/>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>{ls("upsc_drivecid",cidInput);initGIS(cidInput);notify("Saved! Click Authorize →");}} style={{...C.btn("linear-gradient(135deg,#4285F4,#0F9D58)"),flex:1}}>Save</button>
+            <button onClick={()=>tokenClientRef.current?.requestAccessToken?.()} style={C.btn("rgba(255,255,255,0.09)")}>Authorize</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── SOURCE ────────────────────────────────────────────────────────────
+  if(view==="source"){
+    const src=SOURCES[source];
+    return(
+      <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+        <div style={C.topBar}>
+          <button style={C.ghost} onClick={()=>setView("home")}>←</button>
+          <span style={{fontSize:18}}>{src.icon}</span>
+          <div style={{flex:1}}><div style={{fontWeight:700,color:src.color,fontSize:14}}>{src.fullName}</div><div style={{fontSize:10,opacity:0.35}}>Last 24 hours</div></div>
+        </div>
+        <div style={C.wrap} className="fade">
+          <ModeBadge mode={feedMode} age={feedAge} onRefresh={feedMode&&!loadingFeed?()=>fetchFeed(source,true):null}/>
+          {loadingFeed?<div style={{textAlign:"center",padding:"80px 0"}}>
+            <div style={{width:42,height:42,border:`3px solid ${src.color}22`,borderTop:`3px solid ${src.color}`,borderRadius:"50%",animation:"spin 0.9s linear infinite",margin:"0 auto 14px"}}/>
+            <div style={{opacity:0.5,fontSize:13}}>{feedStatus||"Loading…"}</div>
+          </div>:feedError?<div style={{textAlign:"center",padding:"60px 0"}}>
+            <div style={{fontSize:34,marginBottom:10}}>⚠️</div>
+            <div style={{color:"#F87171",marginBottom:6,fontSize:13}}>{feedError}</div>
+            <button style={{...C.ghost,marginTop:14}} onClick={()=>fetchFeed(source,true)}>↻ Retry</button>
+          </div>:<div style={{display:"grid",gap:10}}>
+            {articles.map((art,idx)=>{
+              const tags=guessGS(art.title+" "+art.description);
+              const isToday=feedMode==="live"&&art.timestamp>Date.now()-24*3600000;
+              const isYest=feedMode==="live"&&art.timestamp>Date.now()-48*3600000&&!isToday;
+              return <div key={art.id} onClick={()=>openArticle(art)}
+                style={{...C.card,padding:"13px 16px",cursor:"pointer",borderColor:isToday?src.color+"55":"rgba(255,255,255,0.07)",transition:"all 0.15s"}}
+                onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,0.065)";}}
+                onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,0.035)";}}>
+                <div style={{display:"flex",gap:12}}>
+                  <div style={{fontSize:11,color:src.color,fontWeight:700,opacity:0.6,minWidth:20,paddingTop:2}}>{String(idx+1).padStart(2,"0")}</div>
+                  <div style={{flex:1}}>
+                    {(isToday||isYest)&&<div style={{marginBottom:4}}><span style={{fontSize:9,fontWeight:700,background:isToday?src.color+"30":"rgba(255,255,255,0.08)",color:isToday?src.color:"rgba(255,255,255,0.4)",padding:"2px 7px",borderRadius:20}}>{isToday?"TODAY":"YESTERDAY"}</span></div>}
+                    <div style={{fontWeight:600,lineHeight:1.5,marginBottom:4,fontSize:13}}>{art.title}</div>
+                    <div style={{fontSize:11,opacity:0.3,marginBottom:5}}>{art.date}</div>
+                    <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{tags.map(t=><span key={t} style={C.pill(src.color)}>{t}</span>)}</div>
+                  </div>
+                  {isBM(art.id)&&<span style={{opacity:0.5,fontSize:13}}>🔖</span>}
+                </div>
+              </div>;
+            })}
+          </div>}
+        </div>
+      </div>
+    );
+  }
+
+  // ── ARTICLE ───────────────────────────────────────────────────────────
+  if(view==="article"&&article){
+    const src=SOURCES[source];const bm=isBM(article.id);
+    const gsTags=summary?.gsTags||guessGS(article.title+" "+article.description);
+
+    // ── Carousel ──────────────────────────────────────────────────────
+    if(showCar&&carousel){
+      const sl=carousel.slides?.[slide];
+      const slType=normType(sl?.type);
+      const unsplashKw=getUnsplashKw(gsTags,article.title);
+
+      const slideBoxStyle=slType==="title"?{
+        backgroundImage:`linear-gradient(145deg,rgba(30,27,75,0.88) 0%,rgba(49,46,129,0.88) 50%,rgba(67,56,202,0.88) 100%),url(https://source.unsplash.com/1080x1080/?${unsplashKw})`,
+        backgroundSize:"cover",backgroundPosition:"center"
+      }:{background:SLIDE_BG[slType]||SLIDE_BG.what};
+
+      return(
+        <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+          <div style={C.topBar}>
+            <button style={C.ghost} onClick={()=>setShowCar(false)}>← Article</button>
+            <span style={{fontWeight:600}}>📱 Instagram Carousel</span>
+            <span style={{fontSize:11,opacity:0.4,marginLeft:"auto"}}>{slide+1}/{carousel.slides?.length||5}</span>
+          </div>
+          <div style={{maxWidth:440,margin:"0 auto",padding:"20px 16px"}}>
+            {/* Slide */}
+            <div id="slide-box" style={{width:"100%",aspectRatio:"1/1",...slideBoxStyle,borderRadius:20,padding:28,boxSizing:"border-box",display:"flex",flexDirection:"column",justifyContent:"space-between",marginBottom:14,position:"relative",overflow:"hidden",boxShadow:"0 20px 60px rgba(0,0,0,0.5)"}}>
+              {slType!=="title"&&<>
+                <div style={{position:"absolute",top:-50,right:-50,width:200,height:200,borderRadius:"50%",background:"rgba(255,255,255,0.04)"}}/>
+                <div style={{position:"absolute",bottom:-60,left:-40,width:220,height:220,borderRadius:"50%",background:"rgba(255,255,255,0.03)"}}/>
+              </>}
+              <div style={{display:"flex",justifyContent:"space-between",zIndex:1}}>
+                <div style={{fontSize:11,background:"rgba(255,255,255,0.18)",padding:"4px 12px",borderRadius:20,backdropFilter:"blur(8px)"}}>{slide+1}/{carousel.slides?.length||5}</div>
+                <div style={{fontSize:11,opacity:0.6}}>UPSC Daily</div>
+              </div>
+              <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center",zIndex:1,padding:"12px 0"}}>
+                {slType==="title"&&<>
+                  <div style={{fontSize:38,marginBottom:10}}>{sl.emoji||"📰"}</div>
+                  <h2 style={{margin:"0 0 8px",fontSize:20,fontWeight:800,lineHeight:1.3,textShadow:"0 2px 8px rgba(0,0,0,0.4)"}}>{sl.heading||sl.headline}</h2>
+                  <div style={{fontSize:12,opacity:0.7,textShadow:"0 1px 4px rgba(0,0,0,0.5)"}}>{sl.subline||""}</div>
+                </>}
+                {slType!=="title"&&<>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+                    <span style={{fontSize:20}}>{sl.emoji||""}</span>
+                    <h3 style={{margin:0,fontSize:16,fontWeight:700}}>{sl.heading}</h3>
+                  </div>
+                  {sl.paper&&<div style={{fontSize:10,background:"rgba(255,255,255,0.18)",display:"inline-block",padding:"3px 10px",borderRadius:20,marginBottom:10,backdropFilter:"blur(8px)"}}>{sl.paper}</div>}
+                  {(sl.bullets||[]).map((b,i)=><div key={i} style={{display:"flex",gap:8,marginBottom:9}}>
+                    <span style={{opacity:0.6,marginTop:2,flexShrink:0,fontSize:11}}>▶</span>
+                    <span style={{fontSize:12.5,lineHeight:1.5}}>{b}</span>
+                  </div>)}
+                </>}
+              </div>
+              <div style={{fontSize:10,opacity:0.35,textAlign:"right",zIndex:1}}>@upsc_daily</div>
+            </div>
+            {/* Dots */}
+            <div style={{display:"flex",justifyContent:"center",gap:8,marginBottom:12}}>
+              {carousel.slides?.map((_,i)=><button key={i} onClick={()=>setSlide(i)} style={{width:i===slide?28:8,height:8,borderRadius:4,background:i===slide?"#A78BFA":"rgba(255,255,255,0.2)",border:"none",transition:"width 0.2s",padding:0}}/>)}
+            </div>
+            {/* Controls */}
+            <div style={{display:"flex",gap:8,marginBottom:14}}>
+              <button onClick={()=>setSlide(Math.max(0,slide-1))} style={{...C.btn("rgba(255,255,255,0.07)"),flex:1}} disabled={slide===0}>← Prev</button>
+              <button onClick={downloadSlide} style={C.btn("linear-gradient(135deg,#6366F1,#8B5CF6)")}>📥 Download</button>
+              <button onClick={()=>setSlide(Math.min((carousel.slides?.length||1)-1,slide+1))} style={{...C.btn("rgba(255,255,255,0.07)"),flex:1}} disabled={slide===(carousel.slides?.length||1)-1}>Next →</button>
+            </div>
+            {/* Caption */}
+            {carousel.caption&&<div style={{...C.card,padding:14,marginBottom:10}}>
+              <div style={C.label}>Instagram Caption</div>
+              <p style={{fontSize:12,lineHeight:1.7,marginBottom:10}}>{carousel.caption}</p>
+              <button onClick={()=>{navigator.clipboard.writeText(carousel.caption);notify("📋 Copied!");}} style={{...C.ghost,fontSize:12}}>📋 Copy Caption</button>
+            </div>}
+            {/* YT Shorts */}
+            {carousel.ytShortScript&&<div style={{...C.card,padding:14,marginBottom:14}}>
+              <div style={C.label}>YouTube Shorts Script (60 sec)</div>
+              <p style={{fontSize:12,lineHeight:1.75,opacity:0.85,marginBottom:10}}>{carousel.ytShortScript}</p>
+              <button onClick={()=>{navigator.clipboard.writeText(carousel.ytShortScript);notify("📋 Copied!");}} style={{...C.ghost,fontSize:12}}>📋 Copy Script</button>
+            </div>}
+            {/* YT Long Outline — silenced for now */}
+            <p style={{fontSize:11,opacity:0.25,textAlign:"center"}}>📥 Download each slide as PNG</p>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Article view ─────────────────────────────────────────────────
+    return(
+      <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+        <div style={C.topBar}>
+          <button style={C.ghost} onClick={()=>setView("source")}>← {src.name}</button>
+          <div style={{flex:1,minWidth:0}}><div style={{fontSize:10,opacity:0.3}}>{src.name} · {article.date}</div></div>
+          <button onClick={toggleBM} style={{...C.ghost,color:bm?"#FFC107":"#E2E2EE",background:bm?"rgba(255,193,7,0.1)":"rgba(255,255,255,0.06)"}}>{bm?"🔖 Saved":"🔖 Save"}</button>
+        </div>
+        <div style={C.wrap} className="fade">
+          <h1 style={{fontSize:18,fontWeight:800,lineHeight:1.5,marginBottom:12}}>{article.title}</h1>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16}}>
+            {gsTags.map(t=><span key={t} style={C.pill(src.color)}>{t}</span>)}
+            {article.link&&<a href={article.link} target="_blank" rel="noreferrer" style={{...C.pill(src.color),textDecoration:"none",cursor:"pointer"}}>🔗 Source</a>}
+          </div>
+          <div style={{...C.card,padding:16,marginBottom:14,lineHeight:1.75,opacity:0.7,fontSize:13}}>{article.description||"Visit source link to read full article."}</div>
+
+          {/* Paste box */}
+          <div style={{...C.card,padding:16,marginBottom:16}}>
+            <div style={{...C.label,marginBottom:6}}>📋 Paste Full Article <span style={{fontSize:9,opacity:0.4,fontWeight:400,textTransform:"none",letterSpacing:0}}>(optional — for more accurate analysis)</span></div>
+            <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} rows={3}
+              placeholder="Paste article text for article-specific output. Leave empty to use Google Search auto-fetch."
+              style={{resize:"vertical",lineHeight:1.6,fontSize:12}}/>
+          </div>
+
+          {/* Action buttons */}
+          <div style={{display:"grid",gap:10,marginBottom:18}}>
+            <button onClick={genSummary} disabled={loadingSum} style={C.btn(loadingSum?"rgba(255,255,255,0.05)":"linear-gradient(135deg,#6366F1,#8B5CF6)")}>
+              {loadingSum?`⏳ ${sumStatus||"Generating…"}`:"🤖 Generate AI Summary & UPSC Analysis"}
+            </button>
+            {summary&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <button onClick={genCarousel} disabled={loadingCar} style={C.btn(loadingCar?"rgba(255,255,255,0.05)":"linear-gradient(135deg,#EC4899,#F97316)")}>{loadingCar?"⏳ Generating…":"📱 Carousel + Scripts"}</button>
+              <button onClick={saveToDrive} style={C.btn("linear-gradient(135deg,#4285F4,#0F9D58)")}>💾 Drive</button>
+            </div>}
+            {carousel&&!showCar&&<button onClick={()=>setShowCar(true)} style={C.btn("rgba(236,72,153,0.18)")}>👀 View Carousel →</button>}
+          </div>
+
+          {/* Summary */}
+          {summary&&<div style={{...C.card,padding:20,borderColor:"rgba(99,102,241,0.25)"}} className="fade">
+            <div style={{fontSize:14,fontWeight:700,color:"#A78BFA",marginBottom:18}}>🤖 AI Analysis</div>
+            <div style={{marginBottom:16}}><div style={C.label}>Summary</div><p style={{fontSize:13,lineHeight:1.75}}>{summary.summary}</p></div>
+            <div style={{marginBottom:16}}><div style={C.label}>Key Points</div>
+              {(summary.keyPoints||[]).map((pt,i)=><div key={i} style={{display:"flex",gap:10,marginBottom:7}}>
+                <span style={{color:src.color,fontWeight:700,minWidth:16,fontSize:13}}>{i+1}.</span>
+                <span style={{fontSize:13,lineHeight:1.6}}>{pt}</span>
+              </div>)}
+            </div>
+            <div style={{marginBottom:16,background:"rgba(251,191,36,0.07)",borderRadius:10,padding:"13px 15px",border:"1px solid rgba(251,191,36,0.15)"}}>
+              <div style={{...C.label,color:"#FBB924"}}>🎯 UPSC Angle</div>
+              <p style={{fontSize:13,lineHeight:1.7,marginBottom:summary.possibleQuestion?8:0}}>{summary.upscAngle}</p>
+              {summary.possibleQuestion&&<div style={{fontSize:12,fontStyle:"italic",opacity:0.65,borderTop:"1px solid rgba(251,191,36,0.2)",paddingTop:8}}><strong>❓ </strong>{summary.possibleQuestion}</div>}
+            </div>
+            {summary.whyItMatters&&<div style={{marginBottom:16}}><div style={C.label}>Why It Matters</div><p style={{fontSize:13,lineHeight:1.7}}>{summary.whyItMatters}</p></div>}
+            {summary.mnemonic&&<div style={{marginBottom:16,background:"rgba(99,102,241,0.08)",borderRadius:10,padding:"11px 14px",border:"1px solid rgba(99,102,241,0.2)"}}><div style={{...C.label,color:"#818CF8"}}>🧠 Memory Trick</div><p style={{fontSize:13}}>{summary.mnemonic}</p></div>}
+            <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+              <div style={{flex:1}}><div style={C.label}>GS Tags</div><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{(summary.gsTags||[]).map(t=><span key={t} style={C.pill(src.color)}>{t}</span>)}</div></div>
+              <div style={{flex:1}}><div style={C.label}>Keywords</div><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{(summary.keywords||[]).map(k=><span key={k} style={{fontSize:11,background:"rgba(255,255,255,0.07)",color:"rgba(255,255,255,0.5)",padding:"3px 8px",borderRadius:20}}>{k}</span>)}</div></div>
+            </div>
+          </div>}
+        </div>
+      </div>
+    );
+  }
+
+  // ── BOOKMARKS ─────────────────────────────────────────────────────────
+  if(view==="bookmarks"){
+    const remove=id=>{const u=getBMs().filter(b=>b.id!==id);setBMs(u);setBmsState(u);notify("🗑️ Removed");};
+    return(
+      <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+        <div style={C.topBar}>
+          <button style={C.ghost} onClick={()=>setView("home")}>← Home</button>
+          <div style={{flex:1}}><span style={{fontWeight:700}}>🔖 Saved ({bms.length})</span></div>
+          {bms.length>0&&<button style={C.ghost} onClick={exportCSV}>📥 CSV</button>}
+        </div>
+        <div style={C.wrap} className="fade">
+          {bms.length===0?<div style={{textAlign:"center",padding:"80px 0",opacity:0.3}}><div style={{fontSize:40,marginBottom:10}}>🔖</div><p>No saved articles yet.</p></div>:
+          <div style={{display:"grid",gap:10}}>
+            {bms.map(bm=>{const src=SOURCES[bm.source]||SOURCES.pib;return(
+              <div key={bm.id} style={{...C.card,padding:"14px 16px"}}>
+                <div style={{display:"flex",gap:12}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,lineHeight:1.5,marginBottom:4,fontSize:13}}>{bm.title}</div>
+                    <div style={{fontSize:11,opacity:0.3,marginBottom:5}}>{src.name} · {bm.date}</div>
+                    {bm.summary&&<p style={{fontSize:12,opacity:0.5,lineHeight:1.6,marginBottom:7}}>{bm.summary.slice(0,110)}…</p>}
+                    <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{(bm.gsTags||[]).map(t=><span key={t} style={C.pill(src.color)}>{t}</span>)}</div>
+                  </div>
+                  <button onClick={()=>remove(bm.id)} style={{background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.2)",color:"#F87171",padding:"5px 10px",borderRadius:7,fontSize:11,alignSelf:"flex-start"}}>Remove</button>
+                </div>
+              </div>
+            );})}
+          </div>}
+        </div>
+      </div>
+    );
+  }
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
