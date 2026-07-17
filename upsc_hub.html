@@ -27,7 +27,7 @@ const {useState,useEffect,useCallback,useRef} = React;
 
 const DEFAULT_GAS = "https://script.google.com/macros/s/AKfycbyNkPZMA2jRHFMWAGupFoteO9F3olJqO0Ef-k4XaSffHYbCCpknRCUaUEgBppFhuNM9ig/exec";
 const GEMINI_MODEL = "gemini-3.1-flash-lite";
-const SEARCH_MODEL = "gemini-2.5-flash"; // Gemini 3.1 family has 0 free-tier search-grounding quota — use 2.5 for any call using google_search tool
+const SEARCH_MODEL = "gemini-3.5-flash"; // gemini-2.5-flash deprecated for new users (confirmed 404); Gemini 3.x family has 0 free search-grounding quota — 3.5 works for both
 const CACHE_TTL = 2*60*60*1000;
 
 const SOURCES = {
