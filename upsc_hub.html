@@ -27,6 +27,7 @@ const {useState,useEffect,useCallback,useRef} = React;
 
 const DEFAULT_GAS = "https://script.google.com/macros/s/AKfycbyNkPZMA2jRHFMWAGupFoteO9F3olJqO0Ef-k4XaSffHYbCCpknRCUaUEgBppFhuNM9ig/exec";
 const GEMINI_MODEL = "gemini-3.1-flash-lite";
+const SEARCH_MODEL = "gemini-2.5-flash"; // Gemini 3.1 family has 0 free-tier search-grounding quota — use 2.5 for any call using google_search tool
 const CACHE_TTL = 2*60*60*1000;
 
 const SOURCES = {
@@ -138,6 +139,7 @@ const setBMs=bms=>lsJ(BM_KEY,bms);
 // ── Gemini API ───────────────────────────────────────────────────────
 // ── Gemini API — tries each key in rotation, skipping any on cooldown ──
 const geminiCallSingle=async(apiKey,prompt,tools=null)=>{
+  const modelToUse = tools ? SEARCH_MODEL : GEMINI_MODEL;
   const body={
     contents:[{parts:[{text:prompt}]}],
     generationConfig:{temperature:0.2,maxOutputTokens:1200,thinkingConfig:{thinkingBudget:0}}
@@ -145,7 +147,7 @@ const geminiCallSingle=async(apiKey,prompt,tools=null)=>{
   if(!tools) body.generationConfig.responseMimeType="application/json";
   if(tools) body.tools=tools;
   const res=await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${modelToUse}:generateContent?key=${apiKey}`,
     {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}
   );
   if(res.status===429){ setCooldown(apiKey); throw {rateLimited:true,message:"Rate limited"}; }
