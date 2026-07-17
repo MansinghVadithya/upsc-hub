@@ -26,7 +26,7 @@
 const {useState,useEffect,useCallback,useRef} = React;
 
 const DEFAULT_GAS = "https://script.google.com/macros/s/AKfycbyNkPZMA2jRHFMWAGupFoteO9F3olJqO0Ef-k4XaSffHYbCCpknRCUaUEgBppFhuNM9ig/exec";
-const GEMINI_MODEL = "gemini-flash-latest";
+const GEMINI_MODEL = "gemini-2.5-flash";
 const CACHE_TTL = 2*60*60*1000;
 
 const SOURCES = {
@@ -68,36 +68,34 @@ const getUnsplashKw = (gsTags=[], title="") => {
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
-// Strips emoji, flag characters, and misc symbols from headings (fixes double-emoji + flag-renders-as-"IN")
-const stripEmoji = (str="") => str.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu,"").replace(/\s{2,}/g," ").trim();
-// Renders emoji field safely: swaps the India flag (breaks on Windows Chrome) for a real image, strips it if mixed with other chars
-const SafeEmoji = ({e,size=20,fallback="📰"}) => {
-  if(!e) return fallback?<span>{fallback}</span>:null;
-  if(/\u{1F1EE}\u{1F1F3}/u.test(e)) return <img src="https://flagcdn.com/w40/in.png" alt="India" style={{height:size,verticalAlign:"middle",display:"inline-block",borderRadius:2}}/>;
-  return <span>{stripEmoji(e)||fallback}</span>;
-};
-
-const PEXELS_KEY = "YNhnJ5c1nIkxOREHIjkZTK0i9vDN1ANGZrHqXg1orGs6xLeWtQ9BS2h0";
-const FALLBACK_GRADIENT_URL = ""; // empty -> caller falls back to CSS gradient, no url()
-const slideBgCache = {}; // keyword -> image url, avoids re-fetching same keyword within a session
-async function getSlideBackground(keyword){
-  if(slideBgCache[keyword]) return slideBgCache[keyword];
-  try{
-    const res = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(keyword)}&per_page=1&orientation=square`,
-      {headers:{Authorization:PEXELS_KEY}});
-    if(!res.ok) throw new Error("pexels "+res.status);
-    const data = await res.json();
-    const url = data.photos?.[0]?.src?.large || FALLBACK_GRADIENT_URL;
-    slideBgCache[keyword]=url;
-    return url;
-  }catch{
-    slideBgCache[keyword]=FALLBACK_GRADIENT_URL;
-    return FALLBACK_GRADIENT_URL;
-  }
-}
-
 const ls  = (k,v) => {try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v);}catch{}};
 const lsJ = (k,v) => {try{if(v===undefined){const r=localStorage.getItem(k);return r?JSON.parse(r):null;}localStorage.setItem(k,JSON.stringify(v));}catch{return null;}};
+
+// ── Multi-key rotation ──────────────────────────────────────────────
+// Stores up to 3 Gemini API keys (each from a separate Google account).
+// Tracks which keys are currently rate-limited (with a cooldown timestamp)
+// so we skip straight past a dead key instead of retrying it every call.
+const getApiKeys = () => {
+  const keys = [ls("upsc_apikey1")||ls("upsc_apikey"), ls("upsc_apikey2"), ls("upsc_apikey3")].filter(Boolean);
+  return keys;
+};
+const getCooldowns = () => lsJ("upsc_key_cooldowns") || {};
+const setCooldown = (key) => {
+  const cd = getCooldowns();
+  cd[key] = Date.now() + 60*1000;
+  lsJ("upsc_key_cooldowns", cd);
+};
+const isOnCooldown = (key) => {
+  const cd = getCooldowns();
+  return cd[key] && cd[key] > Date.now();
+};
+// Tracks which numbered slot (1/2/3) most recently succeeded, so the UI can show "Key 2 active"
+const setActiveKeySlot = (key) => {
+  const keys=[ls("upsc_apikey1")||ls("upsc_apikey"), ls("upsc_apikey2"), ls("upsc_apikey3")];
+  const idx = keys.findIndex(k=>k===key);
+  if(idx!==-1) ls("upsc_active_key_slot", String(idx+1));
+};
+const getActiveKeySlot = () => ls("upsc_active_key_slot") || "1";
 const htmlDecode = s=>(s||"").replace(/<[^>]*>/g,"").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&nbsp;/g," ").trim();
 const MONTHS={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
 const toTs = ds=>{if(!ds)return null;const d=new Date(ds);if(!isNaN(d.getTime()))return d.getTime();const m=ds.match(/(\d{1,2})\s+(\w{3})\s+(\d{4})/i);if(m){const mo=MONTHS[m[2].toLowerCase().slice(0,3)];if(mo!=null)return new Date(+m[3],mo,+m[1]).getTime();}return null;};
@@ -138,7 +136,8 @@ const getBMs=()=>lsJ(BM_KEY)||[];
 const setBMs=bms=>lsJ(BM_KEY,bms);
 
 // ── Gemini API ───────────────────────────────────────────────────────
-const geminiCall=async(apiKey,prompt,tools=null)=>{
+// ── Gemini API — tries each key in rotation, skipping any on cooldown ──
+const geminiCallSingle=async(apiKey,prompt,tools=null)=>{
   const body={
     contents:[{parts:[{text:prompt}]}],
     generationConfig:{temperature:0.2,maxOutputTokens:1200,thinkingConfig:{thinkingBudget:0}}
@@ -149,14 +148,36 @@ const geminiCall=async(apiKey,prompt,tools=null)=>{
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
     {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}
   );
-  if(res.status===429)throw new Error("Rate limited — wait 1 min and retry.");
-  if(res.status===400)throw new Error("Invalid API key — check Settings.");
-  if(!res.ok)throw new Error(`API error ${res.status}`);
+  if(res.status===429){ setCooldown(apiKey); throw {rateLimited:true,message:"Rate limited"}; }
+  if(res.status===400) throw new Error("Invalid API key — check Settings.");
+  if(!res.ok) throw new Error(`API error ${res.status}`);
   const data=await res.json();
-  if(data.error)throw new Error(data.error.message||"Gemini error");
+  if(data.error) throw new Error(data.error.message||"Gemini error");
   const text=(data.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("");
-  if(!text)throw new Error("Empty response");
+  if(!text) throw new Error("Empty response");
+  setActiveKeySlot(apiKey);
   return text;
+};
+
+const geminiCall=async(apiKeyIgnored,prompt,tools=null,onRotate=null)=>{
+  const keys = getApiKeys();
+  if(keys.length===0) throw new Error("No API key — check Settings.");
+  const usable = keys.filter(k=>!isOnCooldown(k));
+  const tryOrder = usable.length>0 ? usable : keys;
+  let lastErr=null;
+  for(let i=0;i<tryOrder.length;i++){
+    const key=tryOrder[i];
+    try{ return await geminiCallSingle(key,prompt,tools); }
+    catch(e){
+      lastErr=e;
+      if(e && e.rateLimited){
+        if(i<tryOrder.length-1 && onRotate) onRotate();
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("All API keys rate limited — wait 1 min and retry, or add more keys in Settings.");
 };
 
 const extractJSONObj=text=>{
@@ -207,24 +228,16 @@ function App(){
   const [bms,setBmsState]=useState(getBMs());
   const [toast,setToast]=useState("");
   const [driveToken,setDriveToken]=useState(null);
-  const [apiKey,setApiKey]=useState(ls("upsc_apikey")||"");
-  const [apiInput,setApiInput]=useState(ls("upsc_apikey")||"");
+  const [apiKey,setApiKey]=useState(ls("upsc_apikey1")||ls("upsc_apikey")||"");
+  const [apiInput1,setApiInput1]=useState(ls("upsc_apikey1")||ls("upsc_apikey")||"");
+  const [apiInput2,setApiInput2]=useState(ls("upsc_apikey2")||"");
+  const [apiInput3,setApiInput3]=useState(ls("upsc_apikey3")||"");
   const [gasInput,setGasInput]=useState(ls("upsc_gasurl")||DEFAULT_GAS);
   const [cidInput,setCidInput]=useState(ls("upsc_drivecid")||"");
-  const [slideBgUrl,setSlideBgUrl]=useState("");
   const tokenClientRef=useRef(null);
 
   const notify=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
   useEffect(()=>{const cid=ls("upsc_drivecid");if(cid)initGIS(cid);},[]);
-
-  // Fetch Slide 1 background from Pexels whenever a new carousel is generated (replaces dead source.unsplash.com)
-  useEffect(()=>{
-    if(!showCar||!carousel||!article) return;
-    const gsTags=summary?.gsTags||guessGS(article.title+" "+article.description);
-    const kw=getUnsplashKw(gsTags,article.title).replace(/-/g," ");
-    setSlideBgUrl(""); // reset so a stale image never flashes for the new article
-    getSlideBackground(kw).then(setSlideBgUrl);
-  },[showCar,carousel,article]);
 
   const initGIS=cid=>{
     if(!cid)return;
@@ -258,8 +271,8 @@ function App(){
       }catch(e){console.warn("GAS:",e.message);}
     }
     if(!force){const c=getCache(sid);if(c){setArts(c.articles);setFeedMode("stale");setFeedAge(c.age);setFeedStatus("");setLoadingFeed(false);return;}}
-    const key=ls("upsc_apikey");
-    if(!key){setFeedError("No API key — go to ⚙️ Settings.");setLoadingFeed(false);return;}
+    const keys=getApiKeys();
+    if(keys.length===0){setFeedError("No API key — go to ⚙️ Settings.");setLoadingFeed(false);return;}
     setFeedStatus("Loading from AI knowledge base…");
     const aiP={
       pib:"List 10 real recent PIB India press releases (2024-2025) relevant for UPSC.",
@@ -268,7 +281,7 @@ function App(){
       gnews:"List 10 major recent India news stories (2024-2025) relevant for UPSC aspirants covering governance, economy, defence, environment, science."
     };
     try{
-      const raw=await geminiCall(key,aiP[sid]+" Output ONLY a JSON array:\n[{\"id\":\"1\",\"title\":\"title\",\"description\":\"2-sentence summary\",\"link\":\"url or empty\",\"date\":\"DD Mon YYYY\"}]");
+      const raw=await geminiCall(null,aiP[sid]+" Output ONLY a JSON array:\n[{\"id\":\"1\",\"title\":\"title\",\"description\":\"2-sentence summary\",\"link\":\"url or empty\",\"date\":\"DD Mon YYYY\"}]",null,()=>notify("🔄 Switched to backup key"));
       const parsed=extractJSONArr(raw);
       const items=parsed.map((item,i)=>({id:item.id||String(i+1),title:(item.title||"").trim(),description:(item.description||"").trim(),link:item.link||"",date:item.date||"",timestamp:toTs(item.date)||(Date.now()-i*86400000*30),aiGenerated:true}));
       setArts(items);setFeedMode("ai");setFeedAge(0);setCache(sid,items,"ai");setFeedStatus("");
@@ -281,7 +294,7 @@ function App(){
 
   // ── Generate Summary ───────────────────────────────────────────────
   const genSummary=async()=>{
-    const key=ls("upsc_apikey");if(!key){notify("Add API key in Settings");return;}
+    const keys=getApiKeys();if(keys.length===0){notify("Add API key in Settings");return;}
     setLoadingSum(true);setSumStatus("");
     try{
       const hasPaste=pasteText.trim().length>100;
@@ -307,7 +320,7 @@ function App(){
           "Read the FULL article from search results. Output ONLY valid JSON under 250 words. No repetition between summary and keyPoints.\n\n"+
           "Output: "+schema;
       }
-      const raw=await geminiCall(key,prompt,tools);
+      const raw=await geminiCall(null,prompt,tools,()=>notify("🔄 Switched to backup key"));
       setSummary(extractJSONObj(raw));setSumStatus("");
     }catch(e){notify("❌ "+e.message);setSumStatus("");}
     setLoadingSum(false);
@@ -315,7 +328,7 @@ function App(){
 
   // ── Generate Carousel ──────────────────────────────────────────────
   const genCarousel=async()=>{
-    const key=ls("upsc_apikey");if(!key||!summary){notify("Generate summary first");return;}
+    const keys=getApiKeys();if(keys.length===0||!summary){notify("Generate summary first");return;}
     setLoadingCar(true);
     try{
       const srcName=SOURCES[source]?.name||"";
@@ -338,7 +351,7 @@ function App(){
         "Start with a shocking fact or question (3 seconds). Then rapid-fire specific facts from the article (one punchy sentence each). "+
         "End with UPSC connection and save prompt. Max 160 words. Every word must earn its place.";
 
-      const raw=await geminiCall(key,prompt);
+      const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"));
       setCarousel(extractJSONObj(raw));setShowCar(true);
     }catch(e){notify("❌ "+e.message);}
     setLoadingCar(false);
@@ -449,9 +462,23 @@ function App(){
       <div style={C.topBar}><button style={C.ghost} onClick={()=>setView("home")}>← Home</button><span style={{fontWeight:700}}>⚙️ Settings</span></div>
       <div style={C.wrap} className="fade">
         <div style={{...C.card,padding:20,marginBottom:12}}>
-          <h3 style={{fontSize:14,fontWeight:700,marginBottom:12}}>🔑 Gemini API Key</h3>
-          <input type="password" value={apiInput} onChange={e=>setApiInput(e.target.value)} placeholder="AIza..." style={{marginBottom:10}}/>
-          <button onClick={()=>{ls("upsc_apikey",apiInput);setApiKey(apiInput);notify("✅ Saved!");}} style={{...C.btn("linear-gradient(135deg,#6366F1,#8B5CF6)"),width:"100%"}}>Save API Key</button>
+          <h3 style={{fontSize:14,fontWeight:700,marginBottom:6}}>🔑 Gemini API Keys</h3>
+          <p style={{fontSize:11,opacity:0.45,lineHeight:1.6,marginBottom:12}}>Add up to 3 keys from separate Google accounts. App auto-rotates to the next key if one hits its daily limit.</p>
+          <div style={{background:"rgba(74,222,128,0.08)",border:"1px solid rgba(74,222,128,0.2)",borderRadius:8,padding:"8px 12px",marginBottom:14,fontSize:12,color:"#4ADE80",display:"flex",alignItems:"center",gap:8}}>
+            🟢 <strong>Key {getActiveKeySlot()}</strong> currently active
+          </div>
+          <div style={{fontSize:10,opacity:0.4,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Key 1 (Primary)</div>
+          <input type="password" value={apiInput1} onChange={e=>setApiInput1(e.target.value)} placeholder="AIza..." style={{marginBottom:10}}/>
+          <div style={{fontSize:10,opacity:0.4,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Key 2 (Backup)</div>
+          <input type="password" value={apiInput2} onChange={e=>setApiInput2(e.target.value)} placeholder="AIza... (optional)" style={{marginBottom:10}}/>
+          <div style={{fontSize:10,opacity:0.4,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Key 3 (Backup)</div>
+          <input type="password" value={apiInput3} onChange={e=>setApiInput3(e.target.value)} placeholder="AIza... (optional)" style={{marginBottom:10}}/>
+          <button onClick={()=>{
+            ls("upsc_apikey1",apiInput1);ls("upsc_apikey2",apiInput2);ls("upsc_apikey3",apiInput3);
+            setApiKey(apiInput1);
+            const count=[apiInput1,apiInput2,apiInput3].filter(Boolean).length;
+            notify(`✅ Saved! ${count} key${count!==1?'s':''} active.`);
+          }} style={{...C.btn("linear-gradient(135deg,#6366F1,#8B5CF6)"),width:"100%"}}>Save API Keys</button>
         </div>
         <div style={{...C.card,padding:20,marginBottom:12}}>
           <h3 style={{fontSize:14,fontWeight:700,marginBottom:12}}>⚡ GAS Proxy URL</h3>
@@ -526,9 +553,10 @@ function App(){
     if(showCar&&carousel){
       const sl=carousel.slides?.[slide];
       const slType=normType(sl?.type);
-      const titleGradient="linear-gradient(145deg,rgba(30,27,75,0.88) 0%,rgba(49,46,129,0.88) 50%,rgba(67,56,202,0.88) 100%)";
+      const unsplashKw=getUnsplashKw(gsTags,article.title);
+
       const slideBoxStyle=slType==="title"?{
-        backgroundImage:slideBgUrl?`${titleGradient},url(${slideBgUrl})`:`${titleGradient},linear-gradient(160deg,#1e1b4b,#4338ca)`,
+        backgroundImage:`linear-gradient(145deg,rgba(30,27,75,0.88) 0%,rgba(49,46,129,0.88) 50%,rgba(67,56,202,0.88) 100%),url(https://source.unsplash.com/1080x1080/?${unsplashKw})`,
         backgroundSize:"cover",backgroundPosition:"center"
       }:{background:SLIDE_BG[slType]||SLIDE_BG.what};
 
@@ -552,14 +580,14 @@ function App(){
               </div>
               <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center",zIndex:1,padding:"12px 0"}}>
                 {slType==="title"&&<>
-                  <div style={{fontSize:38,marginBottom:10}}><SafeEmoji e={sl.emoji} size={38}/></div>
-                  <h2 style={{margin:"0 0 8px",fontSize:20,fontWeight:800,lineHeight:1.3,textShadow:"0 2px 8px rgba(0,0,0,0.4)"}}>{stripEmoji(sl.heading||sl.headline||"")}</h2>
+                  <div style={{fontSize:38,marginBottom:10}}>{sl.emoji||"📰"}</div>
+                  <h2 style={{margin:"0 0 8px",fontSize:20,fontWeight:800,lineHeight:1.3,textShadow:"0 2px 8px rgba(0,0,0,0.4)"}}>{sl.heading||sl.headline}</h2>
                   <div style={{fontSize:12,opacity:0.7,textShadow:"0 1px 4px rgba(0,0,0,0.5)"}}>{sl.subline||""}</div>
                 </>}
                 {slType!=="title"&&<>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
-                    <span style={{fontSize:20}}><SafeEmoji e={sl.emoji} size={20} fallback=""/></span>
-                    <h3 style={{margin:0,fontSize:16,fontWeight:700}}>{stripEmoji(sl.heading||"")}</h3>
+                    <span style={{fontSize:20}}>{sl.emoji||""}</span>
+                    <h3 style={{margin:0,fontSize:16,fontWeight:700}}>{sl.heading}</h3>
                   </div>
                   {sl.paper&&<div style={{fontSize:10,background:"rgba(255,255,255,0.18)",display:"inline-block",padding:"3px 10px",borderRadius:20,marginBottom:10,backdropFilter:"blur(8px)"}}>{sl.paper}</div>}
                   {(sl.bullets||[]).map((b,i)=><div key={i} style={{display:"flex",gap:8,marginBottom:9}}>
