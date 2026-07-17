@@ -68,6 +68,34 @@ const getUnsplashKw = (gsTags=[], title="") => {
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
+// Strips emoji, flag characters, and misc symbols from headings (fixes double-emoji + flag-renders-as-"IN")
+const stripEmoji = (str="") => str.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu,"").replace(/\s{2,}/g," ").trim();
+// Renders emoji field safely: swaps the India flag (breaks on Windows Chrome) for a real image, strips it if mixed with other chars
+const SafeEmoji = ({e,size=20,fallback="📰"}) => {
+  if(!e) return fallback?<span>{fallback}</span>:null;
+  if(/\u{1F1EE}\u{1F1F3}/u.test(e)) return <img src="https://flagcdn.com/w40/in.png" alt="India" style={{height:size,verticalAlign:"middle",display:"inline-block",borderRadius:2}}/>;
+  return <span>{stripEmoji(e)||fallback}</span>;
+};
+
+const PEXELS_KEY = "YNhnJ5c1nIkxOREHIjkZTK0i9vDN1ANGZrHqXg1orGs6xLeWtQ9BS2h0";
+const FALLBACK_GRADIENT_URL = ""; // empty -> caller falls back to CSS gradient, no url()
+const slideBgCache = {}; // keyword -> image url, avoids re-fetching same keyword within a session
+async function getSlideBackground(keyword){
+  if(slideBgCache[keyword]) return slideBgCache[keyword];
+  try{
+    const res = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(keyword)}&per_page=1&orientation=square`,
+      {headers:{Authorization:PEXELS_KEY}});
+    if(!res.ok) throw new Error("pexels "+res.status);
+    const data = await res.json();
+    const url = data.photos?.[0]?.src?.large || FALLBACK_GRADIENT_URL;
+    slideBgCache[keyword]=url;
+    return url;
+  }catch{
+    slideBgCache[keyword]=FALLBACK_GRADIENT_URL;
+    return FALLBACK_GRADIENT_URL;
+  }
+}
+
 const ls  = (k,v) => {try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v);}catch{}};
 const lsJ = (k,v) => {try{if(v===undefined){const r=localStorage.getItem(k);return r?JSON.parse(r):null;}localStorage.setItem(k,JSON.stringify(v));}catch{return null;}};
 const htmlDecode = s=>(s||"").replace(/<[^>]*>/g,"").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&nbsp;/g," ").trim();
@@ -183,10 +211,20 @@ function App(){
   const [apiInput,setApiInput]=useState(ls("upsc_apikey")||"");
   const [gasInput,setGasInput]=useState(ls("upsc_gasurl")||DEFAULT_GAS);
   const [cidInput,setCidInput]=useState(ls("upsc_drivecid")||"");
+  const [slideBgUrl,setSlideBgUrl]=useState("");
   const tokenClientRef=useRef(null);
 
   const notify=msg=>{setToast(msg);setTimeout(()=>setToast(""),3000);};
   useEffect(()=>{const cid=ls("upsc_drivecid");if(cid)initGIS(cid);},[]);
+
+  // Fetch Slide 1 background from Pexels whenever a new carousel is generated (replaces dead source.unsplash.com)
+  useEffect(()=>{
+    if(!showCar||!carousel||!article) return;
+    const gsTags=summary?.gsTags||guessGS(article.title+" "+article.description);
+    const kw=getUnsplashKw(gsTags,article.title).replace(/-/g," ");
+    setSlideBgUrl(""); // reset so a stale image never flashes for the new article
+    getSlideBackground(kw).then(setSlideBgUrl);
+  },[showCar,carousel,article]);
 
   const initGIS=cid=>{
     if(!cid)return;
@@ -488,10 +526,9 @@ function App(){
     if(showCar&&carousel){
       const sl=carousel.slides?.[slide];
       const slType=normType(sl?.type);
-      const unsplashKw=getUnsplashKw(gsTags,article.title);
-
+      const titleGradient="linear-gradient(145deg,rgba(30,27,75,0.88) 0%,rgba(49,46,129,0.88) 50%,rgba(67,56,202,0.88) 100%)";
       const slideBoxStyle=slType==="title"?{
-        backgroundImage:`linear-gradient(145deg,rgba(30,27,75,0.88) 0%,rgba(49,46,129,0.88) 50%,rgba(67,56,202,0.88) 100%),url(https://source.unsplash.com/1080x1080/?${unsplashKw})`,
+        backgroundImage:slideBgUrl?`${titleGradient},url(${slideBgUrl})`:`${titleGradient},linear-gradient(160deg,#1e1b4b,#4338ca)`,
         backgroundSize:"cover",backgroundPosition:"center"
       }:{background:SLIDE_BG[slType]||SLIDE_BG.what};
 
@@ -515,14 +552,14 @@ function App(){
               </div>
               <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center",zIndex:1,padding:"12px 0"}}>
                 {slType==="title"&&<>
-                  <div style={{fontSize:38,marginBottom:10}}>{sl.emoji||"📰"}</div>
-                  <h2 style={{margin:"0 0 8px",fontSize:20,fontWeight:800,lineHeight:1.3,textShadow:"0 2px 8px rgba(0,0,0,0.4)"}}>{sl.heading||sl.headline}</h2>
+                  <div style={{fontSize:38,marginBottom:10}}><SafeEmoji e={sl.emoji} size={38}/></div>
+                  <h2 style={{margin:"0 0 8px",fontSize:20,fontWeight:800,lineHeight:1.3,textShadow:"0 2px 8px rgba(0,0,0,0.4)"}}>{stripEmoji(sl.heading||sl.headline||"")}</h2>
                   <div style={{fontSize:12,opacity:0.7,textShadow:"0 1px 4px rgba(0,0,0,0.5)"}}>{sl.subline||""}</div>
                 </>}
                 {slType!=="title"&&<>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
-                    <span style={{fontSize:20}}>{sl.emoji||""}</span>
-                    <h3 style={{margin:0,fontSize:16,fontWeight:700}}>{sl.heading}</h3>
+                    <span style={{fontSize:20}}><SafeEmoji e={sl.emoji} size={20} fallback=""/></span>
+                    <h3 style={{margin:0,fontSize:16,fontWeight:700}}>{stripEmoji(sl.heading||"")}</h3>
                   </div>
                   {sl.paper&&<div style={{fontSize:10,background:"rgba(255,255,255,0.18)",display:"inline-block",padding:"3px 10px",borderRadius:20,marginBottom:10,backdropFilter:"blur(8px)"}}>{sl.paper}</div>}
                   {(sl.bullets||[]).map((b,i)=><div key={i} style={{display:"flex",gap:8,marginBottom:9}}>
