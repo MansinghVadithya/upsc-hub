@@ -295,12 +295,31 @@ function App(){
   const openArticle=art=>{setArticle(art);setSummary(null);setCarousel(null);setShowCar(false);setSlide(0);setPasteText("");setView("article");};
 
   // ── Generate Summary ───────────────────────────────────────────────
+  // Priority order for getting article text:
+  //   1. Pasted text (if user typed/pasted something)
+  //   2. Auto-scrape via Apps Script proxy (fetches full article, strips HTML)
+  //   3. Last resort: Gemini + google_search grounding (hits free-tier quota wall)
   const genSummary=async()=>{
     const keys=getApiKeys();if(keys.length===0){notify("Add API key in Settings");return;}
     setLoadingSum(true);setSumStatus("");
     try{
       const hasPaste=pasteText.trim().length>100;
-      let prompt,tools=null;
+      let articleText = hasPaste ? pasteText.trim() : "";
+      let usedScrape = false;
+
+      if(!hasPaste && article.link){
+        setSumStatus("Fetching full article…");
+        try{
+          const px=ls("upsc_gasurl")||DEFAULT_GAS;
+          const res=await fetch(`${px}?mode=article&url=${encodeURIComponent(article.link)}`);
+          const data=await res.json();
+          if(data.text && data.text.length>150){
+            articleText = data.text.slice(0,6000);
+            usedScrape = true;
+          }
+        }catch(e){ /* scrape failed — fall through to grounded search below */ }
+      }
+
       const schema=
         '{"summary":"2-3 sentences — ONLY new specific facts (names/dates/numbers) NOT repeated in keyPoints",' +
         '"keyPoints":["NEW fact 1 not in summary","NEW fact 2","NEW fact 3","NEW fact 4","NEW fact 5"],' +
@@ -311,12 +330,13 @@ function App(){
         '"keywords":["k1","k2","k3","k4","k5"],' +
         '"mnemonic":"trick or empty"}';
 
-      if(hasPaste){
-        setSumStatus("Analyzing pasted article…");
+      let prompt,tools=null;
+      if(articleText){
+        setSumStatus(usedScrape?"Analyzing fetched article…":"Analyzing pasted article…");
         prompt="UPSC expert. Analyze for CSE. Output ONLY valid JSON under 250 words. No repetition between summary and keyPoints.\n\n"+
-          "Source: "+(SOURCES[source]?.fullName||"")+" | Date: "+article.date+"\nTitle: "+article.title+"\n\nARTICLE:\n"+pasteText.trim()+"\n\nOutput: "+schema;
+          "Source: "+(SOURCES[source]?.fullName||"")+" | Date: "+article.date+"\nTitle: "+article.title+"\n\nARTICLE:\n"+articleText+"\n\nOutput: "+schema;
       }else{
-        setSumStatus("Searching full article via Google…");
+        setSumStatus("Auto-fetch unavailable — searching via Google…");
         tools=[{google_search:{}}];
         prompt="UPSC expert. Search Google for: \""+article.title+"\" "+(SOURCES[source]?.fullName||"")+" "+article.date+"\n"+
           "Read the FULL article from search results. Output ONLY valid JSON under 250 words. No repetition between summary and keyPoints.\n\n"+
@@ -649,7 +669,7 @@ function App(){
           <div style={{...C.card,padding:16,marginBottom:16}}>
             <div style={{...C.label,marginBottom:6}}>📋 Paste Full Article <span style={{fontSize:9,opacity:0.4,fontWeight:400,textTransform:"none",letterSpacing:0}}>(optional — for more accurate analysis)</span></div>
             <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} rows={3}
-              placeholder="Paste article text for article-specific output. Leave empty to use Google Search auto-fetch."
+              placeholder="Paste article text for article-specific output. Leave empty to auto-fetch the full article."
               style={{resize:"vertical",lineHeight:1.6,fontSize:12}}/>
           </div>
 
