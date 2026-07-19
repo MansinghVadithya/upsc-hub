@@ -445,7 +445,10 @@ function App(){
         "Article: "+article.title+"\nKey points: "+(summary?.keyPoints||[]).join(" | ")+"\n\n"+
         "The prompt must describe: a realistic photographic scene depicting the event/subject, "+
         "with UI-style info panels showing ONLY numbers/facts that appear in the Key Points above — "+
-        "use exactly as many panels as there are distinct facts (1-3), never invent a stat that isn't listed, "+
+        "use exactly as many panels as there are distinct facts (1-3), never invent a stat that isn't listed. "+
+        "CRITICAL: each panel's text must carry enough context to be unambiguous on its own — "+
+        "e.g. write 'Email Update Fee: WAIVED (was Rs 75)' not just 'Free Email Updates', "+
+        "since a short generic label can be misread as something unrelated (like a newsletter signup). "+
         "Indian government/institutional visual branding where relevant, cinematic lighting, high detail, 1:1 square composition, no watermarks.\n"+
         "Output ONLY the prompt text itself — no preamble, no quotes, no explanation. Max 100 words.";
       const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"));
