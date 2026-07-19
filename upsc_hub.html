@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/stackblur-canvas/2.7.0/stackblur.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#08080F;color:#E2E2EE;font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
@@ -264,6 +265,7 @@ function App(){
   const [carousel,setCarousel]=useState(null);
   const [pexelsUrl,setPexelsUrl]=useState(null);
   const [customBg,setCustomBg]=useState(null);
+  const [blurredBg,setBlurredBg]=useState(null);
   const [loadingImgPrompt,setLoadingImgPrompt]=useState(false);
   useEffect(()=>{
     if(showCar && carousel && !customBg && !pexelsUrl && article){
@@ -273,6 +275,37 @@ function App(){
       fetchPexelsBg(article.title,categoryKw,key).then(url=>{if(url)setPexelsUrl(url);});
     }
   },[showCar,carousel]);
+  // Pre-bake the blur into a canvas dataURL. html2canvas (1.4.1) does not
+  // implement CSS `filter`, so relying on filter:blur() means the effect
+  // vanishes — or sometimes takes other layers with it — on export. Doing
+  // the blur once here with StackBlur means the layer is just a plain
+  // <img> by the time html2canvas captures it.
+  useEffect(()=>{
+    const bgSrc=customBg||pexelsUrl;
+    if(!bgSrc){setBlurredBg(null);return;}
+    let cancelled=false;
+    const img=new Image();
+    img.crossOrigin="anonymous";
+    img.onload=()=>{
+      if(cancelled)return;
+      try{
+        const canvas=document.createElement("canvas");
+        canvas.width=img.naturalWidth||800;
+        canvas.height=img.naturalHeight||800;
+        const ctx=canvas.getContext("2d");
+        ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        window.StackBlur.canvasRGBA(canvas,0,0,canvas.width,canvas.height,28);
+        setBlurredBg(canvas.toDataURL("image/jpeg",0.85));
+      }catch(e){
+        // CORS taint or blur failure — fall back to the sharp image so
+        // the layer still shows *something* rather than going blank.
+        setBlurredBg(null);
+      }
+    };
+    img.onerror=()=>{if(!cancelled)setBlurredBg(null);};
+    img.src=bgSrc;
+    return ()=>{cancelled=true;};
+  },[customBg,pexelsUrl]);
   const [loadingCar,setLoadingCar]=useState(false);
   const [slide,setSlide]=useState(0);
   const [showCar,setShowCar]=useState(false);
@@ -690,9 +723,13 @@ function App(){
       // photo exists) — sits at z-index 0, behind the text content.
       const blurLayerStyle = (slType!=="title" && bgImg) ? {
         position:"absolute",inset:-14,zIndex:0,
-        backgroundImage:`linear-gradient(145deg,${TINT[slType]||TINT.what},${TINT[slType]||TINT.what}),url(${bgImg})`,
+        backgroundImage:`linear-gradient(145deg,${TINT[slType]||TINT.what},${TINT[slType]||TINT.what}),url(${blurredBg||bgImg})`,
         backgroundSize:"cover",backgroundPosition:"center",
-        filter:"blur(10px)",transform:"scale(1.1)"
+        transform:"scale(1.1)"
+        // No CSS `filter` here on purpose — html2canvas doesn't render it.
+        // blurredBg is already blurred pixels (see useEffect above). If it
+        // hasn't finished baking yet, bgImg is shown sharp as a fallback
+        // rather than nothing.
       } : null;
 
       return(
@@ -711,7 +748,7 @@ function App(){
                 <div style={{position:"absolute",bottom:-60,left:-40,width:220,height:220,borderRadius:"50%",background:"rgba(255,255,255,0.03)"}}/>
               </>}
               <div style={{display:"flex",justifyContent:"space-between",zIndex:1}}>
-                <div style={{fontSize:11,background:"rgba(255,255,255,0.18)",padding:"4px 12px",borderRadius:20,backdropFilter:"blur(8px)"}}>{slide+1}/{carousel.slides?.length||5}</div>
+                <div style={{fontSize:11,background:"rgba(20,20,30,0.55)",padding:"4px 12px",borderRadius:20}}>{slide+1}/{carousel.slides?.length||5}</div>
                 <div style={{fontSize:11,opacity:0.6}}>UPSC Daily</div>
               </div>
               <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:(slType==="title"&&bgImg)?"flex-end":"center",zIndex:1,padding:"12px 0"}}>
@@ -725,7 +762,7 @@ function App(){
                     <span style={{fontSize:20}}>{sl.emoji||""}</span>
                     <h3 style={{margin:0,fontSize:16,fontWeight:700}}>{sl.heading}</h3>
                   </div>
-                  {sl.paper&&<div style={{fontSize:10,background:"rgba(255,255,255,0.18)",display:"inline-block",padding:"3px 10px",borderRadius:20,marginBottom:10,backdropFilter:"blur(8px)"}}>{sl.paper}</div>}
+                  {sl.paper&&<div style={{fontSize:10,background:"rgba(20,20,30,0.55)",display:"inline-block",padding:"3px 10px",borderRadius:20,marginBottom:10}}>{sl.paper}</div>}
                   {(sl.bullets||[]).map((b,i)=><div key={i} style={{display:"flex",gap:8,marginBottom:9}}>
                     <span style={{opacity:0.6,marginTop:2,flexShrink:0,fontSize:11}}>▶</span>
                     <span style={{fontSize:12.5,lineHeight:1.5}}>{b}</span>
