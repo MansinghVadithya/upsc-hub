@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stackblur-canvas/2.7.0/stackblur.min.js"></script>
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#08080F;color:#E2E2EE;font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
@@ -318,6 +319,9 @@ function App(){
   const [apiInput3,setApiInput3]=useState(ls("upsc_apikey3")||"");
   const [gasInput,setGasInput]=useState(ls("upsc_gasurl")||DEFAULT_GAS);
   const [pexelsInput,setPexelsInput]=useState(ls("upsc_pexelskey")||"");
+  const [voicerssInput,setVoicerssInput]=useState(ls("upsc_voicerss")||"");
+  const [loadingVid,setLoadingVid]=useState(false);
+  const [vidStatus,setVidStatus]=useState("");
   const [cidInput,setCidInput]=useState(ls("upsc_drivecid")||"");
   const tokenClientRef=useRef(null);
 
@@ -516,6 +520,89 @@ function App(){
     }catch{notify("❌ Download failed");}
   };
 
+  // ── Generate YouTube Shorts video from ytShortScript ────────────────
+  // Pipeline: VoiceRSS narration (via GAS proxy, avoids CORS) → decode
+  // audio to get real duration → split script into sentences → render
+  // each sentence as a caption frame via html2canvas → assemble with
+  // FFmpeg.wasm (concat demuxer, per-frame duration + audio track) → mp4.
+  const genVideo = async () => {
+    const vKey = ls("upsc_voicerss");
+    if(!vKey){notify("❌ Add VoiceRSS key in ⚙️ Settings first");return;}
+    const script = carousel?.ytShortScript;
+    if(!script){notify("Generate carousel first");return;}
+    setLoadingVid(true);
+    try{
+      // 1. Narration audio
+      setVidStatus("🎙️ Generating narration…");
+      const px = ls("upsc_gasurl")||DEFAULT_GAS;
+      const ttsRes = await fetch(`${px}?mode=tts&text=${encodeURIComponent(script)}&key=${encodeURIComponent(vKey)}`);
+      const ttsData = await ttsRes.json();
+      if(ttsData.error) throw new Error("VoiceRSS: "+ttsData.error);
+      const audioBytes = Uint8Array.from(atob(ttsData.audio), c=>c.charCodeAt(0));
+
+      // 2. Real duration via Web Audio API (VoiceRSS doesn't tell us this up front)
+      setVidStatus("⏱️ Measuring narration length…");
+      const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+      const decoded = await audioCtx.decodeAudioData(audioBytes.buffer.slice(0));
+      const totalDuration = decoded.duration;
+      if(!totalDuration || totalDuration < 1) throw new Error("Narration audio came back empty");
+
+      // 3. Split script into sentences, allot time proportional to length
+      const sentences = script.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map(s=>s.trim()).filter(Boolean) || [script];
+      const totalChars = sentences.reduce((a,s)=>a+s.length,0);
+      const rawDur = sentences.map(s=>Math.max(1.0,(s.length/totalChars)*totalDuration));
+      const rawSum = rawDur.reduce((a,b)=>a+b,0);
+      const durations = rawDur.map(d=>d*(totalDuration/rawSum)); // renormalize to exact total
+
+      if(!window.FFmpeg) throw new Error("FFmpeg failed to load — check your connection and reload the page");
+      const {createFFmpeg} = window.FFmpeg;
+      const ffmpeg = createFFmpeg({log:false, corePath:"https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js"});
+      setVidStatus("⚙️ Loading video engine (first run only)…");
+      if(!ffmpeg.isLoaded()) await ffmpeg.load();
+
+      ffmpeg.FS("writeFile","narration.mp3", audioBytes);
+
+      // 4. Render one caption frame per sentence
+      const frameNode = document.getElementById("video-frame-render");
+      let concatList = "";
+      for(let i=0;i<sentences.length;i++){
+        setVidStatus(`🖼️ Rendering frame ${i+1}/${sentences.length}…`);
+        frameNode.querySelector("p").innerText = sentences[i];
+        await new Promise(r=>setTimeout(r,60)); // let it paint before capture
+        const canvas = await window.html2canvas(frameNode,{scale:2,backgroundColor:"#0c0c16",logging:false});
+        const dataUrl = canvas.toDataURL("image/png");
+        const bytes = Uint8Array.from(atob(dataUrl.split(",")[1]), c=>c.charCodeAt(0));
+        const fname = `frame${String(i).padStart(3,"0")}.png`;
+        ffmpeg.FS("writeFile", fname, bytes);
+        concatList += `file '${fname}'\nduration ${durations[i].toFixed(3)}\n`;
+      }
+      // ffmpeg's concat demuxer needs the last file repeated (its stated duration is otherwise ignored)
+      concatList += `file 'frame${String(sentences.length-1).padStart(3,"0")}.png'\n`;
+      ffmpeg.FS("writeFile","concat.txt", new TextEncoder().encode(concatList));
+
+      // 5. Assemble
+      setVidStatus("🎬 Assembling video…");
+      await ffmpeg.run(
+        "-f","concat","-safe","0","-i","concat.txt",
+        "-i","narration.mp3",
+        "-c:v","libx264","-pix_fmt","yuv420p",
+        "-c:a","aac","-shortest",
+        "output.mp4"
+      );
+
+      const data = ffmpeg.FS("readFile","output.mp4");
+      const blob = new Blob([data.buffer], {type:"video/mp4"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href=url; a.download=`UPSC_Short_${SOURCES[source]?.name||"video"}.mp4`; a.click();
+      notify("📥 Video downloaded!");
+    }catch(e){
+      notify("❌ "+e.message);
+    }
+    setVidStatus("");
+    setLoadingVid(false);
+  };
+
   const toggleBM=()=>{
     const all=getBMs();const has=all.find(b=>b.id===article.id);
     const upd=has?all.filter(b=>b.id!==article.id):[{...article,source,summary:summary?.summary||"",gsTags:summary?.gsTags||guessGS(article.title),savedAt:Date.now()},...all];
@@ -635,6 +722,11 @@ function App(){
           <p style={{fontSize:11,opacity:0.45,lineHeight:1.6,marginBottom:12}}>Free, no billing — used for Slide 1 carousel background photos. Get one at pexels.com/api.</p>
           <input type="password" value={pexelsInput} onChange={e=>setPexelsInput(e.target.value)} placeholder="Your Pexels API key" style={{marginBottom:10}}/>
           <button onClick={()=>{ls("upsc_pexelskey",pexelsInput);notify("✅ Saved!");}} style={{...C.btn("linear-gradient(135deg,#059669,#10B981)"),width:"100%"}}>Save Pexels Key</button>
+        </div>
+        <div style={{...C.card,padding:16,marginBottom:14}}>
+          <div style={C.label}>VoiceRSS API Key (for YouTube Shorts narration)</div>
+          <input type="password" value={voicerssInput} onChange={e=>setVoicerssInput(e.target.value)} placeholder="Your VoiceRSS API key" style={{marginBottom:10}}/>
+          <button onClick={()=>{ls("upsc_voicerss",voicerssInput);notify("✅ Saved!");}} style={{...C.btn("linear-gradient(135deg,#8B5CF6,#6366F1)"),width:"100%"}}>Save VoiceRSS Key</button>
         </div>
         <div style={{...C.card,padding:20}}>
           <h3 style={{fontSize:14,fontWeight:700,marginBottom:12}}>🔗 Google Drive Sync</h3>
@@ -807,7 +899,13 @@ function App(){
             {carousel.ytShortScript&&<div style={{...C.card,padding:14,marginBottom:14}}>
               <div style={C.label}>YouTube Shorts Script (60 sec)</div>
               <p style={{fontSize:12,lineHeight:1.75,opacity:0.85,marginBottom:10}}>{carousel.ytShortScript}</p>
-              <button onClick={()=>{navigator.clipboard.writeText(carousel.ytShortScript);notify("📋 Copied!");}} style={{...C.ghost,fontSize:12}}>📋 Copy Script</button>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>{navigator.clipboard.writeText(carousel.ytShortScript);notify("📋 Copied!");}} style={{...C.ghost,fontSize:12,flex:1}}>📋 Copy Script</button>
+                <button onClick={genVideo} disabled={loadingVid} style={{...C.btn("linear-gradient(135deg,#8B5CF6,#6366F1)"),fontSize:12,flex:1,opacity:loadingVid?0.6:1}}>
+                  {loadingVid?"⏳ Working…":"🎬 Generate Video"}
+                </button>
+              </div>
+              {vidStatus&&<p style={{fontSize:11,opacity:0.6,marginTop:8}}>{vidStatus}</p>}
             </div>}
             {/* YT Long Outline — silenced for now */}
             <p style={{fontSize:11,opacity:0.25,textAlign:"center"}}>📥 Download each slide as PNG</p>
@@ -879,6 +977,10 @@ function App(){
               <div style={{flex:1}}><div style={C.label}>Keywords</div><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{(summary.keywords||[]).map(k=><span key={k} style={{fontSize:11,background:"rgba(255,255,255,0.07)",color:"rgba(255,255,255,0.5)",padding:"3px 8px",borderRadius:20}}>{k}</span>)}</div></div>
             </div>
           </div>}
+        </div>
+        {/* Offscreen 9:16 caption frame, captured by html2canvas during video generation */}
+        <div id="video-frame-render" style={{position:"fixed",left:-9999,top:0,width:540,height:960,background:"#0c0c16",display:"flex",alignItems:"center",justifyContent:"center",padding:40}}>
+          <p style={{color:"#fff",fontSize:34,fontWeight:700,lineHeight:1.4,textAlign:"center",fontFamily:"'Segoe UI',system-ui,sans-serif"}}></p>
         </div>
       </div>
     );
