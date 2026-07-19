@@ -747,11 +747,11 @@ function App(){
                 <div style={{position:"absolute",top:-50,right:-50,width:200,height:200,borderRadius:"50%",background:"rgba(255,255,255,0.04)"}}/>
                 <div style={{position:"absolute",bottom:-60,left:-40,width:220,height:220,borderRadius:"50%",background:"rgba(255,255,255,0.03)"}}/>
               </>}
-              <div style={{display:"flex",justifyContent:"space-between",zIndex:1}}>
+              <div style={{position:"relative",display:"flex",justifyContent:"space-between",zIndex:1}}>
                 <div style={{fontSize:11,background:"rgba(20,20,30,0.55)",padding:"4px 12px",borderRadius:20}}>{slide+1}/{carousel.slides?.length||5}</div>
                 <div style={{fontSize:11,opacity:0.6}}>UPSC Daily</div>
               </div>
-              <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:(slType==="title"&&bgImg)?"flex-end":"center",zIndex:1,padding:"12px 0"}}>
+              <div style={{position:"relative",flex:1,display:"flex",flexDirection:"column",justifyContent:(slType==="title"&&bgImg)?"flex-end":"center",zIndex:1,padding:"12px 0"}}>
                 {slType==="title"&&<>
                   {!bgImg&&<div style={{fontSize:38,marginBottom:10}}>{sl.emoji||"📰"}</div>}
                   <h2 style={{margin:"0 0 8px",fontSize:20,fontWeight:800,lineHeight:1.3,textShadow:"0 2px 8px rgba(0,0,0,0.4)"}}>{sl.heading||sl.headline}</h2>
@@ -769,7 +769,7 @@ function App(){
                   </div>)}
                 </>}
               </div>
-              <div style={{fontSize:10,opacity:0.35,textAlign:"right",zIndex:1}}>@upsc_daily</div>
+              <div style={{position:"relative",fontSize:10,opacity:0.35,textAlign:"right",zIndex:1}}>@upsc_daily</div>
             </div>
             {/* Custom background upload — slide 1 only */}
             {slType==="title"&&<div style={{display:"flex",gap:8,marginBottom:8}}>
