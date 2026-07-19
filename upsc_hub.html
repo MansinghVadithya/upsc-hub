@@ -68,20 +68,42 @@ const getUnsplashKw = (gsTags=[], title="") => {
   return "india-current-affairs-government-policy";
 };
 
+// Extract 2-3 specific, image-searchable terms from the article title —
+// e.g. "NITI Aayog released a report on Investment Friendliness Index"
+// -> "NITI Aayog report". Falls back to null if nothing usable is found,
+// in which case caller uses the broad GS-category keyword instead.
+const getArticleKw = (title="") => {
+  const STOP = new Set(["the","a","an","of","on","in","to","for","and","with","by","from","is","are","was","were","released","launched","announced","report","said","says","new","govt","government","india","indian"]);
+  const words = title.replace(/["'“”‘’]/g,"").split(/\s+/)
+    .filter(w=>w.length>2 && !STOP.has(w.toLowerCase()));
+  // Prefer capitalized/proper-noun-looking words (acronyms, names) first
+  const proper = words.filter(w=>/^[A-Z]/.test(w));
+  const picked = (proper.length?proper:words).slice(0,3);
+  return picked.length ? picked.join(" ") : null;
+};
+
 // Fetch a slide-1 background photo from Pexels (free tier, no billing).
-// Returns null on any failure — caller falls back to a solid gradient,
-// never a broken-image icon.
-const fetchPexelsBg = async (query, key) => {
+// Tries the article-specific query first, falls back to the broad
+// GS-category keyword if that search returns nothing. Returns null on
+// any failure — caller falls back to a solid gradient, never a broken image.
+const fetchPexelsBg = async (articleTitle, categoryKw, key) => {
   if(!key) return null;
-  try{
-    const q = query.replace(/-/g," ");
-    const res = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=1&orientation=square`,{
-      headers:{Authorization:key}
-    });
-    if(!res.ok) return null;
-    const data = await res.json();
-    return data.photos?.[0]?.src?.large || null;
-  }catch{return null;}
+  const tryQuery = async (q) => {
+    try{
+      const res = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=1&orientation=square`,{
+        headers:{Authorization:key}
+      });
+      if(!res.ok) return null;
+      const data = await res.json();
+      return data.photos?.[0]?.src?.large || null;
+    }catch{return null;}
+  };
+  const specific = getArticleKw(articleTitle);
+  if(specific){
+    const url = await tryQuery(specific);
+    if(url) return url;
+  }
+  return tryQuery(categoryKw.replace(/-/g," "));
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -246,8 +268,8 @@ function App(){
     if(showCar && carousel && !customBg && !pexelsUrl && article){
       const key=ls("upsc_pexelskey");
       const tags=summary?.gsTags||guessGS(article.title+" "+article.description);
-      const kw=getUnsplashKw(tags,article.title);
-      fetchPexelsBg(kw,key).then(url=>{if(url)setPexelsUrl(url);});
+      const categoryKw=getUnsplashKw(tags,article.title);
+      fetchPexelsBg(article.title,categoryKw,key).then(url=>{if(url)setPexelsUrl(url);});
     }
   },[showCar,carousel]);
   const [loadingCar,setLoadingCar]=useState(false);
@@ -611,7 +633,7 @@ function App(){
       const bgImg = customBg || pexelsUrl;
       const slideBoxStyle=slType==="title"?{
         backgroundImage: bgImg
-          ? `linear-gradient(145deg,rgba(30,27,75,0.88) 0%,rgba(49,46,129,0.88) 50%,rgba(67,56,202,0.88) 100%),url(${bgImg})`
+          ? `linear-gradient(to bottom, rgba(10,8,30,0) 0%, rgba(10,8,30,0.15) 45%, rgba(10,8,30,0.75) 72%, rgba(10,8,30,0.95) 100%),url(${bgImg})`
           : `linear-gradient(145deg,#1E1B4B 0%,#312E81 50%,#4338CA 100%)`,
         backgroundSize:"cover",backgroundPosition:"center"
       }:{background:SLIDE_BG[slType]||SLIDE_BG.what};
@@ -634,9 +656,9 @@ function App(){
                 <div style={{fontSize:11,background:"rgba(255,255,255,0.18)",padding:"4px 12px",borderRadius:20,backdropFilter:"blur(8px)"}}>{slide+1}/{carousel.slides?.length||5}</div>
                 <div style={{fontSize:11,opacity:0.6}}>UPSC Daily</div>
               </div>
-              <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center",zIndex:1,padding:"12px 0"}}>
+              <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:(slType==="title"&&bgImg)?"flex-end":"center",zIndex:1,padding:"12px 0"}}>
                 {slType==="title"&&<>
-                  <div style={{fontSize:38,marginBottom:10}}>{sl.emoji||"📰"}</div>
+                  {!bgImg&&<div style={{fontSize:38,marginBottom:10}}>{sl.emoji||"📰"}</div>}
                   <h2 style={{margin:"0 0 8px",fontSize:20,fontWeight:800,lineHeight:1.3,textShadow:"0 2px 8px rgba(0,0,0,0.4)"}}>{sl.heading||sl.headline}</h2>
                   <div style={{fontSize:12,opacity:0.7,textShadow:"0 1px 4px rgba(0,0,0,0.5)"}}>{sl.subline||""}</div>
                 </>}
