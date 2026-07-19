@@ -781,6 +781,11 @@ function App(){
           {/* Paste box */}
           <div style={{...C.card,padding:16,marginBottom:16}}>
             <div style={{...C.label,marginBottom:6}}>📋 Paste Full Article <span style={{fontSize:9,opacity:0.4,fontWeight:400,textTransform:"none",letterSpacing:0}}>(optional — for more accurate analysis)</span></div>
+            {source==="pib"&&pasteText.trim().length<=100&&
+              <div style={{background:"rgba(245,158,11,0.12)",border:"1px solid rgba(245,158,11,0.35)",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:11.5,color:"#FBBF24",lineHeight:1.5}}>
+                ⚠️ PIB can't auto-fetch (blocked server-side) — paste the article text below, or Generate will hit the search-quota limit and fail.
+              </div>
+            }
             <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} rows={3}
               placeholder="Paste article text for article-specific output. Leave empty to auto-fetch the full article."
               style={{resize:"vertical",lineHeight:1.6,fontSize:12}}/>
