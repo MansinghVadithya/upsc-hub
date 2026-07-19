@@ -54,7 +54,7 @@ const normType = (t="") => {
   return "save";
 };
 
-// Map GS tags to Unsplash search keywords for Slide 1 background
+// Map GS tags to search keywords for Slide 1 background
 const getUnsplashKw = (gsTags=[], title="") => {
   const t=title.toLowerCase();
   if(gsTags.some(g=>g.includes("Defence"))||/missile|drdo|army|navy|defence/.test(t)) return "military-technology-india-defence";
@@ -66,6 +66,22 @@ const getUnsplashKw = (gsTags=[], title="") => {
   if(gsTags.some(g=>g.includes("Agriculture"))||/farmer|crop|kisan|msp/.test(t)) return "agriculture-farming-rural-india";
   if(gsTags.some(g=>g.includes("Social"))||/health|education|scheme|welfare/.test(t)) return "education-health-society-india";
   return "india-current-affairs-government-policy";
+};
+
+// Fetch a slide-1 background photo from Pexels (free tier, no billing).
+// Returns null on any failure — caller falls back to a solid gradient,
+// never a broken-image icon.
+const fetchPexelsBg = async (query, key) => {
+  if(!key) return null;
+  try{
+    const q = query.replace(/-/g," ");
+    const res = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=1&orientation=square`,{
+      headers:{Authorization:key}
+    });
+    if(!res.ok) return null;
+    const data = await res.json();
+    return data.photos?.[0]?.src?.large || null;
+  }catch{return null;}
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -224,6 +240,16 @@ function App(){
   const [loadingSum,setLoadingSum]=useState(false);
   const [sumStatus,setSumStatus]=useState("");
   const [carousel,setCarousel]=useState(null);
+  const [pexelsUrl,setPexelsUrl]=useState(null);
+  const [customBg,setCustomBg]=useState(null);
+  useEffect(()=>{
+    if(showCar && carousel && !customBg && !pexelsUrl && article){
+      const key=ls("upsc_pexelskey");
+      const tags=summary?.gsTags||guessGS(article.title+" "+article.description);
+      const kw=getUnsplashKw(tags,article.title);
+      fetchPexelsBg(kw,key).then(url=>{if(url)setPexelsUrl(url);});
+    }
+  },[showCar,carousel]);
   const [loadingCar,setLoadingCar]=useState(false);
   const [slide,setSlide]=useState(0);
   const [showCar,setShowCar]=useState(false);
@@ -235,6 +261,7 @@ function App(){
   const [apiInput2,setApiInput2]=useState(ls("upsc_apikey2")||"");
   const [apiInput3,setApiInput3]=useState(ls("upsc_apikey3")||"");
   const [gasInput,setGasInput]=useState(ls("upsc_gasurl")||DEFAULT_GAS);
+  const [pexelsInput,setPexelsInput]=useState(ls("upsc_pexelskey")||"");
   const [cidInput,setCidInput]=useState(ls("upsc_drivecid")||"");
   const tokenClientRef=useRef(null);
 
@@ -292,7 +319,7 @@ function App(){
   },[]);
 
   const openSource=sid=>{setSrc(sid);setView("source");fetchFeed(sid);};
-  const openArticle=art=>{setArticle(art);setSummary(null);setCarousel(null);setShowCar(false);setSlide(0);setPasteText("");setView("article");};
+  const openArticle=art=>{setArticle(art);setSummary(null);setCarousel(null);setShowCar(false);setSlide(0);setPasteText("");setPexelsUrl(null);setCustomBg(null);setView("article");};
 
   // ── Generate Summary ───────────────────────────────────────────────
   // Priority order for getting article text:
@@ -507,6 +534,12 @@ function App(){
           <input value={gasInput} onChange={e=>setGasInput(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec" style={{marginBottom:10}}/>
           <button onClick={()=>{ls("upsc_gasurl",gasInput);notify("✅ Saved!");}} style={{...C.btn("linear-gradient(135deg,#10B981,#059669)"),width:"100%"}}>Save Proxy URL</button>
         </div>
+        <div style={{...C.card,padding:20,marginBottom:12}}>
+          <h3 style={{fontSize:14,fontWeight:700,marginBottom:6}}>🖼️ Pexels API Key</h3>
+          <p style={{fontSize:11,opacity:0.45,lineHeight:1.6,marginBottom:12}}>Free, no billing — used for Slide 1 carousel background photos. Get one at pexels.com/api.</p>
+          <input type="password" value={pexelsInput} onChange={e=>setPexelsInput(e.target.value)} placeholder="Your Pexels API key" style={{marginBottom:10}}/>
+          <button onClick={()=>{ls("upsc_pexelskey",pexelsInput);notify("✅ Saved!");}} style={{...C.btn("linear-gradient(135deg,#059669,#10B981)"),width:"100%"}}>Save Pexels Key</button>
+        </div>
         <div style={{...C.card,padding:20}}>
           <h3 style={{fontSize:14,fontWeight:700,marginBottom:12}}>🔗 Google Drive Sync</h3>
           {driveToken&&<div style={{background:"rgba(74,222,128,0.08)",border:"1px solid rgba(74,222,128,0.2)",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:11,color:"#4ADE80"}}>✅ Connected</div>}
@@ -575,10 +608,11 @@ function App(){
     if(showCar&&carousel){
       const sl=carousel.slides?.[slide];
       const slType=normType(sl?.type);
-      const unsplashKw=getUnsplashKw(gsTags,article.title);
-
+      const bgImg = customBg || pexelsUrl;
       const slideBoxStyle=slType==="title"?{
-        backgroundImage:`linear-gradient(145deg,rgba(30,27,75,0.88) 0%,rgba(49,46,129,0.88) 50%,rgba(67,56,202,0.88) 100%),url(https://source.unsplash.com/1080x1080/?${unsplashKw})`,
+        backgroundImage: bgImg
+          ? `linear-gradient(145deg,rgba(30,27,75,0.88) 0%,rgba(49,46,129,0.88) 50%,rgba(67,56,202,0.88) 100%),url(${bgImg})`
+          : `linear-gradient(145deg,#1E1B4B 0%,#312E81 50%,#4338CA 100%)`,
         backgroundSize:"cover",backgroundPosition:"center"
       }:{background:SLIDE_BG[slType]||SLIDE_BG.what};
 
@@ -620,6 +654,19 @@ function App(){
               </div>
               <div style={{fontSize:10,opacity:0.35,textAlign:"right",zIndex:1}}>@upsc_daily</div>
             </div>
+            {/* Custom background upload — slide 1 only */}
+            {slType==="title"&&<div style={{display:"flex",gap:8,marginBottom:12}}>
+              <label style={{...C.ghost,fontSize:12,cursor:"pointer",flex:1,textAlign:"center",display:"block"}}>
+                🖼️ {customBg?"Change":"Upload"} Custom Background
+                <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>{
+                  const file=e.target.files?.[0];if(!file)return;
+                  const reader=new FileReader();
+                  reader.onload=()=>setCustomBg(reader.result);
+                  reader.readAsDataURL(file);
+                }}/>
+              </label>
+              {customBg&&<button onClick={()=>setCustomBg(null)} style={{...C.ghost,fontSize:12}}>✕ Remove</button>}
+            </div>}
             {/* Dots */}
             <div style={{display:"flex",justifyContent:"center",gap:8,marginBottom:12}}>
               {carousel.slides?.map((_,i)=><button key={i} onClick={()=>setSlide(i)} style={{width:i===slide?28:8,height:8,borderRadius:4,background:i===slide?"#A78BFA":"rgba(255,255,255,0.2)",border:"none",transition:"width 0.2s",padding:0}}/>)}
