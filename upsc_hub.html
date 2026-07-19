@@ -264,6 +264,7 @@ function App(){
   const [carousel,setCarousel]=useState(null);
   const [pexelsUrl,setPexelsUrl]=useState(null);
   const [customBg,setCustomBg]=useState(null);
+  const [loadingImgPrompt,setLoadingImgPrompt]=useState(false);
   useEffect(()=>{
     if(showCar && carousel && !customBg && !pexelsUrl && article){
       const key=ls("upsc_pexelskey");
@@ -426,6 +427,32 @@ function App(){
       setCarousel(extractJSONObj(raw));setShowCar(true);
     }catch(e){notify("❌ "+e.message);}
     setLoadingCar(false);
+  };
+
+  // ── Generate AI Image Prompt (for manual use in Gemini app/AI Studio) ─
+  // Free-tier image generation isn't reliably available via API (same
+  // quota wall hit earlier), so this writes a tailored prompt instead —
+  // you paste it manually, download the result, then use the upload
+  // button above to drop it into Slide 1.
+  const genImagePrompt=async()=>{
+    const keys=getApiKeys();if(keys.length===0){notify("Add API key in Settings");return;}
+    if(!carousel){notify("Generate carousel first");return;}
+    setLoadingImgPrompt(true);
+    try{
+      const hook=carousel.slides?.[0];
+      const prompt=
+        "Write ONE detailed photorealistic image-generation prompt for an AI image tool (Gemini/Imagen style), for a professional news-infographic scene.\n\n"+
+        "Article: "+article.title+"\nKey points: "+(summary?.keyPoints||[]).join(" | ")+"\n\n"+
+        "The prompt must describe: a realistic photographic scene depicting the event/subject, "+
+        "with 2-3 embedded UI-style info panels or signage showing key numbers/facts from the article, "+
+        "Indian government/institutional visual branding where relevant, cinematic lighting, high detail, 1:1 square composition, no watermarks.\n"+
+        "Output ONLY the prompt text itself — no preamble, no quotes, no explanation. Max 100 words.";
+      const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"));
+      const clean=raw.trim().replace(/^["']|["']$/g,"");
+      await navigator.clipboard.writeText(clean);
+      notify("📋 Image prompt copied — paste into Gemini app/AI Studio");
+    }catch(e){notify("❌ "+e.message);}
+    setLoadingImgPrompt(false);
   };
 
   // ── Download slide ─────────────────────────────────────────────────
@@ -677,7 +704,7 @@ function App(){
               <div style={{fontSize:10,opacity:0.35,textAlign:"right",zIndex:1}}>@upsc_daily</div>
             </div>
             {/* Custom background upload — slide 1 only */}
-            {slType==="title"&&<div style={{display:"flex",gap:8,marginBottom:12}}>
+            {slType==="title"&&<div style={{display:"flex",gap:8,marginBottom:8}}>
               <label style={{...C.ghost,fontSize:12,cursor:"pointer",flex:1,textAlign:"center",display:"block"}}>
                 🖼️ {customBg?"Change":"Upload"} Custom Background
                 <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>{
@@ -689,6 +716,9 @@ function App(){
               </label>
               {customBg&&<button onClick={()=>setCustomBg(null)} style={{...C.ghost,fontSize:12}}>✕ Remove</button>}
             </div>}
+            {slType==="title"&&<button onClick={genImagePrompt} disabled={loadingImgPrompt} style={{...C.btn(loadingImgPrompt?"rgba(255,255,255,0.05)":"linear-gradient(135deg,#0EA5E9,#6366F1)"),width:"100%",marginBottom:12,fontSize:12}}>
+              {loadingImgPrompt?"⏳ Writing prompt…":"🎨 Copy AI Image Prompt"}
+            </button>}
             {/* Dots */}
             <div style={{display:"flex",justifyContent:"center",gap:8,marginBottom:12}}>
               {carousel.slides?.map((_,i)=><button key={i} onClick={()=>setSlide(i)} style={{width:i===slide?28:8,height:8,borderRadius:4,background:i===slide?"#A78BFA":"rgba(255,255,255,0.2)",border:"none",transition:"width 0.2s",padding:0}}/>)}
