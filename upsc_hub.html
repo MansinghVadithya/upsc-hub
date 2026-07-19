@@ -571,9 +571,17 @@ function App(){
         // Single-thread core — works with no COOP/COEP headers, which matters
         // since GitHub Pages can't set those headers even if we wanted to.
         const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+        // The FFmpeg class also spawns its own worker script (separate from
+        // the core above). Browsers refuse new Worker(url) for a cross-origin
+        // url, so we fetch it ourselves and hand over a same-origin blob:
+        // URL instead — classWorkerURL is exactly for this.
+        const classWorkerURL = await toBlobURL(
+          "https://esm.sh/@ffmpeg/ffmpeg@0.12.15/es2022/worker.js", "text/javascript"
+        );
         await ffmpeg.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm")
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+          classWorkerURL
         });
       }
 
