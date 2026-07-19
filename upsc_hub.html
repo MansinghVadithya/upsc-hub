@@ -9,7 +9,14 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stackblur-canvas/2.7.0/stackblur.min.js"></script>
-<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<script type="module">
+  import { FFmpeg } from "https://esm.sh/@ffmpeg/ffmpeg@0.12.15";
+  import { toBlobURL } from "https://esm.sh/@ffmpeg/util@0.12.2";
+  // Exposed on window so the classic (Babel-transformed) script below can
+  // use it — this module tag and the text/babel tag run in separate JS
+  // module graphs and can't share ES imports directly.
+  window.FFmpegLib = { FFmpeg, toBlobURL };
+</script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#08080F;color:#E2E2EE;font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
@@ -322,6 +329,7 @@ function App(){
   const [voicerssInput,setVoicerssInput]=useState(ls("upsc_voicerss")||"");
   const [loadingVid,setLoadingVid]=useState(false);
   const [vidStatus,setVidStatus]=useState("");
+  const ffmpegRef=useRef(null);
   const [cidInput,setCidInput]=useState(ls("upsc_drivecid")||"");
   const tokenClientRef=useRef(null);
 
@@ -554,13 +562,22 @@ function App(){
       const rawSum = rawDur.reduce((a,b)=>a+b,0);
       const durations = rawDur.map(d=>d*(totalDuration/rawSum)); // renormalize to exact total
 
-      if(!window.FFmpeg) throw new Error("FFmpeg failed to load — check your connection and reload the page");
-      const {createFFmpeg} = window.FFmpeg;
-      const ffmpeg = createFFmpeg({log:false, corePath:"https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js"});
-      setVidStatus("⚙️ Loading video engine (first run only)…");
-      if(!ffmpeg.isLoaded()) await ffmpeg.load();
+      if(!window.FFmpegLib) throw new Error("FFmpeg module failed to load — check your internet connection and reload the page");
+      if(!ffmpegRef.current) ffmpegRef.current = new window.FFmpegLib.FFmpeg();
+      const ffmpeg = ffmpegRef.current;
+      if(!ffmpeg.loaded){
+        setVidStatus("⚙️ Loading video engine (first run only, ~31MB)…");
+        const {toBlobURL} = window.FFmpegLib;
+        // Single-thread core — works with no COOP/COEP headers, which matters
+        // since GitHub Pages can't set those headers even if we wanted to.
+        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm")
+        });
+      }
 
-      ffmpeg.FS("writeFile","narration.mp3", audioBytes);
+      await ffmpeg.writeFile("narration.mp3", audioBytes);
 
       // 4. Render one caption frame per sentence
       const frameNode = document.getElementById("video-frame-render");
@@ -573,24 +590,24 @@ function App(){
         const dataUrl = canvas.toDataURL("image/png");
         const bytes = Uint8Array.from(atob(dataUrl.split(",")[1]), c=>c.charCodeAt(0));
         const fname = `frame${String(i).padStart(3,"0")}.png`;
-        ffmpeg.FS("writeFile", fname, bytes);
+        await ffmpeg.writeFile(fname, bytes);
         concatList += `file '${fname}'\nduration ${durations[i].toFixed(3)}\n`;
       }
       // ffmpeg's concat demuxer needs the last file repeated (its stated duration is otherwise ignored)
       concatList += `file 'frame${String(sentences.length-1).padStart(3,"0")}.png'\n`;
-      ffmpeg.FS("writeFile","concat.txt", new TextEncoder().encode(concatList));
+      await ffmpeg.writeFile("concat.txt", new TextEncoder().encode(concatList));
 
       // 5. Assemble
       setVidStatus("🎬 Assembling video…");
-      await ffmpeg.run(
+      await ffmpeg.exec([
         "-f","concat","-safe","0","-i","concat.txt",
         "-i","narration.mp3",
         "-c:v","libx264","-pix_fmt","yuv420p",
         "-c:a","aac","-shortest",
         "output.mp4"
-      );
+      ]);
 
-      const data = ffmpeg.FS("readFile","output.mp4");
+      const data = await ffmpeg.readFile("output.mp4");
       const blob = new Blob([data.buffer], {type:"video/mp4"});
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
