@@ -672,12 +672,28 @@ function App(){
       const sl=carousel.slides?.[slide];
       const slType=normType(sl?.type);
       const bgImg = customBg || pexelsUrl;
+      // Color-tint used per slide type, layered over a blurred version of
+      // the same Slide-1 photo (rendered as a separate layer below, not
+      // via backdropFilter — that only blurs what's BEHIND an element,
+      // not its own background-image).
+      const TINT = {
+        what:"rgba(7,89,133,0.80)", why:"rgba(146,64,14,0.80)",
+        upsc:"rgba(6,95,70,0.80)", save:"rgba(91,33,182,0.80)"
+      };
       const slideBoxStyle=slType==="title"?{
         backgroundImage: bgImg
           ? `linear-gradient(to bottom, rgba(10,8,30,0) 0%, rgba(10,8,30,0.15) 45%, rgba(10,8,30,0.75) 72%, rgba(10,8,30,0.95) 100%),url(${bgImg})`
           : `linear-gradient(145deg,#1E1B4B 0%,#312E81 50%,#4338CA 100%)`,
         backgroundSize:"cover",backgroundPosition:"center"
       }:{background:SLIDE_BG[slType]||SLIDE_BG.what};
+      // Separate blurred background layer for slides 2-5 (only when a
+      // photo exists) — sits at z-index 0, behind the text content.
+      const blurLayerStyle = (slType!=="title" && bgImg) ? {
+        position:"absolute",inset:-14,zIndex:0,
+        backgroundImage:`linear-gradient(145deg,${TINT[slType]||TINT.what},${TINT[slType]||TINT.what}),url(${bgImg})`,
+        backgroundSize:"cover",backgroundPosition:"center",
+        filter:"blur(10px)",transform:"scale(1.1)"
+      } : null;
 
       return(
         <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
@@ -689,6 +705,7 @@ function App(){
           <div style={{maxWidth:440,margin:"0 auto",padding:"20px 16px"}}>
             {/* Slide */}
             <div id="slide-box" style={{width:"100%",aspectRatio:"1/1",...slideBoxStyle,borderRadius:20,padding:28,boxSizing:"border-box",display:"flex",flexDirection:"column",justifyContent:"space-between",marginBottom:14,position:"relative",overflow:"hidden",boxShadow:"0 20px 60px rgba(0,0,0,0.5)"}}>
+              {blurLayerStyle&&<div style={blurLayerStyle}/>}
               {slType!=="title"&&<>
                 <div style={{position:"absolute",top:-50,right:-50,width:200,height:200,borderRadius:"50%",background:"rgba(255,255,255,0.04)"}}/>
                 <div style={{position:"absolute",bottom:-60,left:-40,width:220,height:220,borderRadius:"50%",background:"rgba(255,255,255,0.03)"}}/>
