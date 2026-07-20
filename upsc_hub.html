@@ -185,11 +185,11 @@ const setBMs=bms=>lsJ(BM_KEY,bms);
 
 // ── Gemini API ───────────────────────────────────────────────────────
 // ── Gemini API — tries each key in rotation, skipping any on cooldown ──
-const geminiCallSingle=async(apiKey,prompt,tools=null)=>{
+const geminiCallSingle=async(apiKey,prompt,tools=null,maxTokens=1200)=>{
   const modelToUse = tools ? SEARCH_MODEL : GEMINI_MODEL;
   const body={
     contents:[{parts:[{text:prompt}]}],
-    generationConfig:{temperature:0.2,maxOutputTokens:1200,thinkingConfig:{thinkingBudget:0}}
+    generationConfig:{temperature:0.2,maxOutputTokens:maxTokens,thinkingConfig:{thinkingBudget:0}}
   };
   if(!tools) body.generationConfig.responseMimeType="application/json";
   if(tools) body.tools=tools;
@@ -208,7 +208,7 @@ const geminiCallSingle=async(apiKey,prompt,tools=null)=>{
   return text;
 };
 
-const geminiCall=async(apiKeyIgnored,prompt,tools=null,onRotate=null)=>{
+const geminiCall=async(apiKeyIgnored,prompt,tools=null,onRotate=null,maxTokens=1200)=>{
   const keys = getApiKeys();
   if(keys.length===0) throw new Error("No API key — check Settings.");
   const usable = keys.filter(k=>!isOnCooldown(k));
@@ -216,7 +216,7 @@ const geminiCall=async(apiKeyIgnored,prompt,tools=null,onRotate=null)=>{
   let lastErr=null;
   for(let i=0;i<tryOrder.length;i++){
     const key=tryOrder[i];
-    try{ return await geminiCallSingle(key,prompt,tools); }
+    try{ return await geminiCallSingle(key,prompt,tools,maxTokens); }
     catch(e){
       lastErr=e;
       if(e && e.rateLimited){
@@ -241,6 +241,17 @@ const extractJSONArr=text=>{
   let clean=text.replace(/```json|```/gi,"").trim();
   let r=tryP(clean);if(r&&Array.isArray(r))return r;
   const m=clean.match(/\[[\s\S]*\]/);if(m){r=tryP(m[0]);if(r)return r;}
+  // Gemini sometimes hits maxOutputTokens mid-array, cutting the JSON off
+  // before the closing bracket. Salvage whatever complete objects came
+  // through rather than failing the whole list over a truncated tail.
+  const start=clean.indexOf("[");
+  if(start!==-1){
+    const lastBrace=clean.lastIndexOf("}");
+    if(lastBrace>start){
+      r=tryP(clean.slice(start,lastBrace+1)+"]");
+      if(r&&Array.isArray(r)&&r.length>0)return r;
+    }
+  }
   throw new Error("Parse failed — retry");
 };
 
@@ -378,7 +389,7 @@ function App(){
       gnews:"List 10 major recent India news stories (2024-2025) relevant for UPSC aspirants covering governance, economy, defence, environment, science."
     };
     try{
-      const raw=await geminiCall(null,aiP[sid]+" Output ONLY a JSON array:\n[{\"id\":\"1\",\"title\":\"title\",\"description\":\"2-sentence summary\",\"link\":\"url or empty\",\"date\":\"DD Mon YYYY\"}]",null,()=>notify("🔄 Switched to backup key"));
+      const raw=await geminiCall(null,aiP[sid]+" Output ONLY a JSON array:\n[{\"id\":\"1\",\"title\":\"title\",\"description\":\"2-sentence summary\",\"link\":\"url or empty\",\"date\":\"DD Mon YYYY\"}]",null,()=>notify("🔄 Switched to backup key"),2500);
       const parsed=extractJSONArr(raw);
       const items=parsed.map((item,i)=>({id:item.id||String(i+1),title:(item.title||"").trim(),description:(item.description||"").trim(),link:item.link||"",date:item.date||"",timestamp:toTs(item.date)||(Date.now()-i*86400000*30),aiGenerated:true}));
       setArts(items);setFeedMode("ai");setFeedAge(0);setCache(sid,items,"ai");setFeedStatus("");
