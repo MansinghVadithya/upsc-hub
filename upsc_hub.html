@@ -977,7 +977,7 @@ function App(){
           <h1 style={{fontSize:18,fontWeight:800,lineHeight:1.5,marginBottom:12}}>{article.title}</h1>
           <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16}}>
             {gsTags.map(t=><span key={t} style={C.pill(src.color)}>{t}</span>)}
-            {article.link&&<a href={article.link} target="_blank" rel="noreferrer" style={{...C.pill(src.color),textDecoration:"none",cursor:"pointer"}}>🔗 Source</a>}
+            {article.link&&<a href={`${ls("upsc_gasurl")||DEFAULT_GAS}?mode=resolve&url=${encodeURIComponent(article.link)}`} target="_blank" rel="noreferrer" style={{...C.pill(src.color),textDecoration:"none",cursor:"pointer"}}>🔗 Source</a>}
           </div>
           <div style={{...C.card,padding:16,marginBottom:14,lineHeight:1.75,opacity:0.7,fontSize:13}}>{article.description||"Visit source link to read full article."}</div>
 
