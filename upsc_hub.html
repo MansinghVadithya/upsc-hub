@@ -372,7 +372,22 @@ function App(){
         if(all.length>0){
           const day=Date.now()-24*3600000;
           const f=all.filter(i=>i.timestamp>=day);
-          const final=f.length>=3?f:all.slice(0,20);
+          let final=f.length>=3?f:all.slice(0,20);
+          if(sid==="pib"){
+            // PIB's stateless scrape only ever returns Hindi (the site's
+            // language switch needs a real browser session we can't carry
+            // through a server-side fetch) — translate headlines in one
+            // batched call rather than showing Hindi in the list. If this
+            // fails for any reason, fall back to the original Hindi titles
+            // rather than breaking the live feed.
+            try{
+              setFeedStatus("Translating headlines…");
+              const titles=final.map(i=>i.title);
+              const raw=await geminiCall(null,"Translate these press release titles from Hindi to English. Output ONLY a JSON array of strings, same order, one translation per title, no other text:\n"+JSON.stringify(titles),null,null,2500);
+              const translated=extractJSONArr(raw);
+              final=final.map((it,i)=>({...it,title:(translated[i]&&typeof translated[i]==="string"&&translated[i].trim())?translated[i].trim():it.title}));
+            }catch(e){console.warn("Translate:",e.message);}
+          }
           setArts(final);setFeedMode("live");setFeedAge(0);
           setCache(sid,final,"live");setFeedStatus("");setLoadingFeed(false);return;
         }
