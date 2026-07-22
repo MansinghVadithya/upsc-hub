@@ -604,11 +604,19 @@ function App(){
         const classWorkerURL = await toBlobURL(
           "https://esm.sh/@ffmpeg/ffmpeg@0.12.15/es2022/worker.js", "text/javascript"
         );
-        await ffmpeg.load({
+        const loadPromise = ffmpeg.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
           classWorkerURL
         });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(
+            "Video engine timed out after 45s — the worker script likely never initialized. " +
+            "Try disabling ad-blockers/privacy extensions (they sometimes silently block unpkg.com " +
+            "or esm.sh), then hard-refresh and retry."
+          )), 45000)
+        );
+        await Promise.race([loadPromise, timeoutPromise]);
       }
 
       await ffmpeg.writeFile("narration.mp3", audioBytes);
