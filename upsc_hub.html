@@ -24,7 +24,8 @@
   @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
   .fade{animation:fadeIn 0.3s ease}
-  input,textarea{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#E2E2EE;border-radius:8px;padding:10px 14px;font-size:13px;width:100%;outline:none;font-family:inherit}
+  input,textarea,select{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#E2E2EE;border-radius:8px;padding:10px 14px;font-size:13px;width:100%;outline:none;font-family:inherit}
+  select option{background:#0F0F1A;color:#E2E2EE}
   input:focus,textarea:focus{border-color:rgba(129,140,248,0.5)}
   button{cursor:pointer;font-family:inherit}
 </style>
@@ -277,6 +278,9 @@ function App(){
   const [feedStatus,setFeedStatus]=useState("");
   const [feedError,setFeedError]=useState(null);
   const [loadingFeed,setLoadingFeed]=useState(false);
+  const [archiveDates,setArchiveDates]=useState([]);
+  const [selectedDate,setSelectedDate]=useState("live");
+  const [loadingArchive,setLoadingArchive]=useState(false);
   const [article,setArticle]=useState(null);
   const [pasteText,setPasteText]=useState("");
   const [showManual,setShowManual]=useState(false);
@@ -416,7 +420,44 @@ function App(){
     setLoadingFeed(false);
   },[]);
 
-  const openSource=sid=>{setSrc(sid);setView("source");fetchFeed(sid);};
+  // ── Date filter (archive) — only meaningful for PIB and Google News,
+  // since RBI/SEBI aren't asked for and this Worker only archives those two
+  // (see archiveItems() server-side). Dates come from real past fetches —
+  // there's no way to pull PIB's or Google News' history beyond that.
+  const DATE_FILTER_SOURCES=["pib","gnews"];
+  const fetchArchiveDates=useCallback(async(sid)=>{
+    if(!DATE_FILTER_SOURCES.includes(sid)){setArchiveDates([]);return;}
+    const px=ls("upsc_gasurl")||DEFAULT_GAS;
+    if(!px)return;
+    try{
+      const res=await fetch(`${px}?mode=archive&action=list&source=${sid}`);
+      const data=await res.json();
+      setArchiveDates(data.dates||[]);
+    }catch(e){console.warn("Archive list:",e.message);setArchiveDates([]);}
+  },[]);
+  const selectArchiveDate=async(sid,date)=>{
+    setSelectedDate(date);
+    if(date==="live"){fetchFeed(sid);return;}
+    const px=ls("upsc_gasurl")||DEFAULT_GAS;
+    if(!px)return;
+    setLoadingArchive(true);setFeedError(null);setArts([]);
+    try{
+      const res=await fetch(`${px}?mode=archive&action=get&source=${sid}&date=${date}`);
+      const data=await res.json();
+      const items=(data.items||[]).map((it,i)=>({
+        id:`${sid}_${date}_${i}`,
+        title:it.title||"",
+        description:"",
+        link:it.link||"",
+        date:new Date(date).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}),
+        timestamp:new Date(date).getTime()
+      }));
+      setArts(items);setFeedMode("archive");setFeedAge(0);
+    }catch(e){setFeedError(e.message);}
+    setLoadingArchive(false);
+  };
+
+  const openSource=sid=>{setSrc(sid);setView("source");setSelectedDate("live");fetchFeed(sid);fetchArchiveDates(sid);};
   const openArticle=art=>{setArticle(art);setSummary(null);setCarousel(null);setShowCar(false);setSlide(0);setPasteText("");setPexelsUrl(null);setCustomBg(null);setView("article");};
   // Lands straight on the article screen from a manually typed title/URL —
   // no RSS source involved, so "manual" is registered in SOURCES purely so
@@ -717,7 +758,8 @@ function App(){
     const cfg={
       live: {bg:"rgba(74,222,128,0.08)",border:"rgba(74,222,128,0.2)",color:"#4ADE80",icon:"🟢",label:"Live RSS",sub:`Real-time · ${fmtAge(age)}`},
       stale:{bg:"rgba(251,191,36,0.07)",border:"rgba(251,191,36,0.2)",color:"#FBB924",icon:"🟡",label:`Cached (${fmtAge(age)})`,sub:"Showing last known data"},
-      ai:   {bg:"rgba(129,140,248,0.08)",border:"rgba(129,140,248,0.2)",color:"#818CF8",icon:"🤖",label:"AI Knowledge Base",sub:"Training data 2024–Aug 2025"}
+      ai:   {bg:"rgba(129,140,248,0.08)",border:"rgba(129,140,248,0.2)",color:"#818CF8",icon:"🤖",label:"AI Knowledge Base",sub:"Training data 2024–Aug 2025"},
+      archive:{bg:"rgba(244,114,182,0.08)",border:"rgba(244,114,182,0.2)",color:"#F472B6",icon:"📅",label:"Archived Snapshot",sub:"From a saved past fetch"}
     };
     const c=cfg[mode];if(!c)return null;
     return <div className="fade" style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
@@ -839,11 +881,20 @@ function App(){
         <div style={C.topBar}>
           <button style={C.ghost} onClick={()=>setView("home")}>←</button>
           <span style={{fontSize:18}}>{src.icon}</span>
-          <div style={{flex:1}}><div style={{fontWeight:700,color:src.color,fontSize:14}}>{src.fullName}</div><div style={{fontSize:10,opacity:0.35}}>Last 24 hours</div></div>
+          <div style={{flex:1}}><div style={{fontWeight:700,color:src.color,fontSize:14}}>{src.fullName}</div><div style={{fontSize:10,opacity:0.35}}>{selectedDate==="live"?"Last 24 hours":new Date(selectedDate).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"})}</div></div>
         </div>
         <div style={C.wrap} className="fade">
-          <ModeBadge mode={feedMode} age={feedAge} onRefresh={feedMode&&!loadingFeed?()=>fetchFeed(source,true):null}/>
-          {loadingFeed?<div style={{textAlign:"center",padding:"80px 0"}}>
+          {DATE_FILTER_SOURCES.includes(source)&&archiveDates.length>0&&
+            <div style={{marginBottom:14}}>
+              <div style={C.label}>Date</div>
+              <select value={selectedDate} onChange={e=>selectArchiveDate(source,e.target.value)} style={{cursor:"pointer"}}>
+                <option value="live">Today (Live)</option>
+                {archiveDates.map(d=><option key={d} value={d}>{new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"})}</option>)}
+              </select>
+            </div>
+          }
+          <ModeBadge mode={feedMode} age={feedAge} onRefresh={feedMode&&!loadingFeed&&!loadingArchive?()=>{selectedDate==="live"?fetchFeed(source,true):selectArchiveDate(source,selectedDate);}:null}/>
+          {(loadingFeed||loadingArchive)?<div style={{textAlign:"center",padding:"80px 0"}}>
             <div style={{width:42,height:42,border:`3px solid ${src.color}22`,borderTop:`3px solid ${src.color}`,borderRadius:"50%",animation:"spin 0.9s linear infinite",margin:"0 auto 14px"}}/>
             <div style={{opacity:0.5,fontSize:13}}>{feedStatus||"Loading…"}</div>
           </div>:feedError?<div style={{textAlign:"center",padding:"60px 0"}}>
