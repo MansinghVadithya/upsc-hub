@@ -440,11 +440,11 @@ function App(){
     if(date==="live"){fetchFeed(sid);return;}
     const px=ls("upsc_gasurl")||DEFAULT_GAS;
     if(!px)return;
-    setLoadingArchive(true);setFeedError(null);setArts([]);
+    setLoadingArchive(true);setFeedError(null);setFeedStatus("");setArts([]);
     try{
       const res=await fetch(`${px}?mode=archive&action=get&source=${sid}&date=${date}`);
       const data=await res.json();
-      const items=(data.items||[]).map((it,i)=>({
+      let items=(data.items||[]).map((it,i)=>({
         id:`${sid}_${date}_${i}`,
         title:it.title||"",
         description:"",
@@ -452,7 +452,21 @@ function App(){
         date:new Date(date).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}),
         timestamp:new Date(date).getTime()
       }));
-      setArts(items);setFeedMode("archive");setFeedAge(0);
+      // PIB's archive is saved straight from the Worker's raw scrape, which
+      // is always Hindi (see handlePIB server-side) — the Worker has no
+      // Gemini key to translate with, so unlike the live-fetch path this
+      // never gets translated at write-time. Do it here at read-time
+      // instead, same batched-call approach as fetchFeed uses for live PIB.
+      if(sid==="pib"&&items.length>0){
+        try{
+          setFeedStatus("Translating headlines…");
+          const titles=items.map(i=>i.title);
+          const raw=await geminiCall(null,"Translate these press release titles from Hindi to English. Output ONLY a JSON array of strings, same order, one translation per title, no other text:\n"+JSON.stringify(titles),null,null,2500);
+          const translated=extractJSONArr(raw);
+          items=items.map((it,i)=>({...it,title:(translated[i]&&typeof translated[i]==="string"&&translated[i].trim())?translated[i].trim():it.title}));
+        }catch(e){console.warn("Archive translate:",e.message);}
+      }
+      setArts(items);setFeedMode("archive");setFeedAge(0);setFeedStatus("");
     }catch(e){setFeedError(e.message);}
     setLoadingArchive(false);
   };
