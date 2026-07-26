@@ -43,7 +43,8 @@ const SOURCES = {
   pib:   {id:"pib",   name:"PIB",   fullName:"Press Information Bureau",            color:"#FF6B35",icon:"🏛️"},
   rbi:   {id:"rbi",   name:"RBI",   fullName:"Reserve Bank of India",               color:"#4F9EFF",icon:"🏦"},
   sebi:  {id:"sebi",  name:"SEBI",  fullName:"Securities & Exchange Board of India", color:"#2DD4BF",icon:"📈"},
-  gnews: {id:"gnews", name:"Google News",fullName:"Google News — India",            color:"#EA4335",icon:"📰"}
+  gnews: {id:"gnews", name:"Google News",fullName:"Google News — India",            color:"#EA4335",icon:"📰"},
+  manual:{id:"manual",name:"Manual",     fullName:"Manually Added Article",         color:"#F472B6",icon:"📝"}
 };
 
 const SLIDE_BG = {
@@ -278,6 +279,9 @@ function App(){
   const [loadingFeed,setLoadingFeed]=useState(false);
   const [article,setArticle]=useState(null);
   const [pasteText,setPasteText]=useState("");
+  const [showManual,setShowManual]=useState(false);
+  const [manualTitle,setManualTitle]=useState("");
+  const [manualUrl,setManualUrl]=useState("");
   const [summary,setSummary]=useState(null);
   const [loadingSum,setLoadingSum]=useState(false);
   const [sumStatus,setSumStatus]=useState("");
@@ -414,6 +418,22 @@ function App(){
 
   const openSource=sid=>{setSrc(sid);setView("source");fetchFeed(sid);};
   const openArticle=art=>{setArticle(art);setSummary(null);setCarousel(null);setShowCar(false);setSlide(0);setPasteText("");setPexelsUrl(null);setCustomBg(null);setView("article");};
+  // Lands straight on the article screen from a manually typed title/URL —
+  // no RSS source involved, so "manual" is registered in SOURCES purely so
+  // the article header/back-button code (which does SOURCES[source]) has
+  // something valid to read.
+  const openManualArticle=(title,url)=>{
+    const art={
+      id:`manual_${Date.now()}`,
+      title:(title||"").trim()||"Untitled Article",
+      description:"",
+      link:(url||"").trim(),
+      date:new Date().toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}),
+      timestamp:Date.now()
+    };
+    setSrc("manual");
+    openArticle(art);
+  };
 
   // ── Generate Summary ───────────────────────────────────────────────
   // Priority order for getting article text:
@@ -719,10 +739,21 @@ function App(){
         {!apiKey&&<div style={{background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.25)",borderRadius:10,padding:"11px 14px",marginBottom:14,fontSize:12,color:"#F87171"}}>
           ⚠️ No API key — go to ⚙️ Settings to add your Gemini API key.
         </div>}
-        <div style={{display:"flex",gap:10,marginBottom:20}}>
+        <div style={{display:"flex",gap:10,marginBottom:12}}>
           <button onClick={()=>setView("bookmarks")} style={{...C.ghost,flex:1}}>🔖 Saved ({bms.length})</button>
           <button onClick={()=>setView("settings")} style={C.ghost}>⚙️ Settings</button>
         </div>
+        <button onClick={()=>setShowManual(v=>!v)} style={{...C.ghost,width:"100%",marginBottom:showManual?10:20}}>📝 Paste Article / URL</button>
+        {showManual&&<div style={{...C.card,padding:14,marginBottom:20}} className="fade">
+          <input value={manualTitle} onChange={e=>setManualTitle(e.target.value)} placeholder="Title (optional)" style={{marginBottom:8}}/>
+          <input value={manualUrl} onChange={e=>setManualUrl(e.target.value)} placeholder="URL (optional)" style={{marginBottom:10}}/>
+          <button
+            onClick={()=>{openManualArticle(manualTitle,manualUrl);setShowManual(false);setManualTitle("");setManualUrl("");}}
+            disabled={!manualTitle.trim()&&!manualUrl.trim()}
+            style={{...C.btn("linear-gradient(135deg,#F472B6,#EC4899)"),width:"100%",opacity:(!manualTitle.trim()&&!manualUrl.trim())?0.4:1}}>
+            Go →
+          </button>
+        </div>}
         <div style={{...C.label,marginBottom:12}}>Select Source</div>
         <div style={{display:"grid",gap:10}}>
           {Object.values(SOURCES).map(src=>{
@@ -977,7 +1008,7 @@ function App(){
     return(
       <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
         <div style={C.topBar}>
-          <button style={C.ghost} onClick={()=>setView("source")}>← {src.name}</button>
+          <button style={C.ghost} onClick={()=>setView(source==="manual"?"home":"source")}>← {source==="manual"?"Home":src.name}</button>
           <div style={{flex:1,minWidth:0}}><div style={{fontSize:10,opacity:0.3}}>{src.name} · {article.date}</div></div>
           <button onClick={toggleBM} style={{...C.ghost,color:bm?"#FFC107":"#E2E2EE",background:bm?"rgba(255,193,7,0.1)":"rgba(255,255,255,0.06)"}}>{bm?"🔖 Saved":"🔖 Save"}</button>
         </div>
