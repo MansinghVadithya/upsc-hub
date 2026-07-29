@@ -1,0 +1,29 @@
+name: Generate & Upload UPSC Short
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # polls every 30 min; the Worker enforces the real 2-hour gap
+  workflow_dispatch: {}       # lets you trigger it manually from the Actions tab, for testing
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg and fonts
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Render and upload
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          VOICERSS_KEY: ${{ secrets.VOICERSS_KEY }}
+          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: node scripts/render-and-upload.js
