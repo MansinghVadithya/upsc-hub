@@ -348,6 +348,8 @@ function App(){
   const [voicerssInput,setVoicerssInput]=useState(ls("upsc_voicerss")||"");
   const [loadingVid,setLoadingVid]=useState(false);
   const [vidStatus,setVidStatus]=useState("");
+  const [addingQueue,setAddingQueue]=useState(false);
+  const [queueStatus,setQueueStatus]=useState("");
   const ffmpegRef=useRef(null);
   const [cidInput,setCidInput]=useState(ls("upsc_drivecid")||"");
   const tokenClientRef=useRef(null);
@@ -627,6 +629,34 @@ function App(){
       a.href=canvas.toDataURL("image/png");a.click();
       notify("📥 Slide "+(slide+1)+" downloaded!");
     }catch{notify("❌ Download failed");}
+  };
+
+  // ── Add this article's script to the GitHub Actions video queue ────
+  // The scheduled Action polls the Worker every 30 min and only actually
+  // renders/uploads once every 2 hours (enforced server-side) — this
+  // button just enqueues; it never triggers anything directly, so no
+  // GitHub token is ever exposed client-side.
+  const addToQueue = async () => {
+    const script = carousel?.ytShortScript;
+    if(!script){notify("Generate carousel first");return;}
+    const px=ls("upsc_gasurl")||DEFAULT_GAS;
+    if(!px){notify("❌ Proxy URL not set in ⚙️ Settings");return;}
+    setAddingQueue(true);setQueueStatus("Adding to queue…");
+    try{
+      const res=await fetch(`${px}?mode=queue&action=add`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({title:article?.title||"Untitled",url:article?.link||"",script})
+      });
+      const data=await res.json();
+      if(data.error) throw new Error(data.error);
+      setQueueStatus("✅ Queued — the Action picks it up within 2 hours");
+      notify("✅ Added to video queue!");
+    }catch(e){
+      setQueueStatus("❌ "+e.message);
+      notify("❌ Failed to queue: "+e.message);
+    }
+    setAddingQueue(false);
   };
 
   // ── Generate YouTube Shorts video from ytShortScript ────────────────
@@ -1060,7 +1090,11 @@ function App(){
                   {loadingVid?"⏳ Working…":"🎬 Generate Video"}
                 </button>
               </div>
+              <button onClick={addToQueue} disabled={addingQueue} style={{...C.btn("linear-gradient(135deg,#F59E0B,#EF4444)"),fontSize:12,width:"100%",marginTop:8,opacity:addingQueue?0.6:1}}>
+                {addingQueue?"⏳ Adding…":"📤 Add to Auto-Upload Queue"}
+              </button>
               {vidStatus&&<p style={{fontSize:11,opacity:0.6,marginTop:8}}>{vidStatus}</p>}
+              {queueStatus&&<p style={{fontSize:11,opacity:0.6,marginTop:8}}>{queueStatus}</p>}
             </div>}
             {/* YT Long Outline — silenced for now */}
             <p style={{fontSize:11,opacity:0.25,textAlign:"center"}}>📥 Download each slide as PNG</p>
