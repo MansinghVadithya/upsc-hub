@@ -192,7 +192,7 @@ async function renderVideo(item) {
   const introDur = 2.5;
   const safeTitle = item.title.replace(/'/g, "\\'").replace(/:/g, '\\:');
   const intro = path.join(WORKDIR, 'intro.mp4');
-  sh(`ffmpeg -y -loop 1 -i "${introBg}" -t ${introDur} -vf "scale=${W}:${H},eq=brightness=-0.25,drawtext=font='DejaVu Sans Bold':text='${safeTitle}':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=12:box=1:boxcolor=black@0.35:boxborderw=20" -f lavfi -i "anullsrc=r=44100:cl=stereo" -c:v libx264 -pix_fmt yuv420p -shortest "${intro}"`);
+  sh(`ffmpeg -y -loop 1 -i "${introBg}" -t ${introDur} -f lavfi -i "anullsrc=r=44100:cl=stereo" -vf "scale=${W}:${H},eq=brightness=-0.25,drawtext=font='DejaVu Sans Bold':text='${safeTitle}':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=12:box=1:boxcolor=black@0.35:boxborderw=20" -c:v libx264 -pix_fmt yuv420p -shortest "${intro}"`);
 
   const listPath = path.join(WORKDIR, 'concat.txt');
   fs.writeFileSync(listPath, `file '${intro}'\nfile '${captioned}'\n`);
