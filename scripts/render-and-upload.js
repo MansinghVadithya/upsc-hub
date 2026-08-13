@@ -39,9 +39,24 @@ async function main() {
     console.log('Done:', videoUrl);
   } catch (err) {
     console.error('Render/upload failed:', err.message);
-    await completeQueueItem(item.id, false, null);
-    process.exit(1); // fails the Action loudly so you get a GitHub email
+    await completeQueueItem(item.id, false, null, err.message);
+    process.exit(1);
   }
+}
+
+// ---------- text cleanup, shared by narration AND captions so they always
+// match exactly ----------
+// Strips markdown emphasis characters that TTS engines read literally
+// (VoiceRSS was audibly saying "underscore"), and groups bare numbers with
+// commas so they're read as quantities ("two thousand") instead of digit
+// by digit ("two zero zero zero") — VoiceRSS's number-reading only kicks
+// in reliably with comma-grouped numerals.
+function sanitizeScript(text) {
+  return text
+    .replace(/[*_~`]/g, '')
+    .replace(/\b\d{4,}\b/g, m => Number(m).toLocaleString('en-IN'))
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // ---------- narration audio ----------
@@ -108,7 +123,7 @@ Style: Default,DejaVu Sans Bold,72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
-  const HIGHLIGHT = '&H4AD5FF'; // gold — ASS colour order is &HBBGGRR, not RRGGBB
+  const HIGHLIGHT = '&H4AD5FF';
   const WHITE = '&HFFFFFF';
   let lines = '';
   timeline.forEach(({ words }) => {
@@ -122,12 +137,35 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   return header + lines;
 }
 
-// ---------- background media — India-only, video first then still image ----------
-function extractKeywords(title) {
-  const STOP = new Set(['the','a','an','of','on','in','to','for','and','with','by','from','is','are','was','were','released','launched','announced','report','said','says','new','govt','government','india','indian']);
-  const words = title.replace(/["'“”‘’]/g,'').split(/\s+/).filter(w => w.length > 2 && !STOP.has(w.toLowerCase()));
-  const proper = words.filter(w => /^[A-Z]/.test(w));
-  return (proper.length ? proper : words).slice(0,3).join(' ') || 'India government';
+// ---------- background media — category-based (matches the app's own
+// guessGS/getUnsplashKw system), India-only, video first then still image ----------
+function guessGS(text) {
+  const t = text.toLowerCase();
+  const tags = new Set();
+  if (/economy|gdp|fiscal|budget|inflation|tax|finance|trade|fdi|monetary|banking|nbfc|sebi|market|bond/.test(t)) tags.add('Economy');
+  if (/defence|military|army|navy|missile|drdo|terror/.test(t)) tags.add('Defence');
+  if (/environment|climate|forest|pollution|biodiversity|carbon|emission|ramsar|weather|monsoon/.test(t)) tags.add('Environment');
+  if (/agriculture|farmer|crop|msp|irrigation|kisan/.test(t)) tags.add('Agriculture');
+  if (/space|isro|technology|innovation|digital|quantum|nuclear|artificial intelligence/.test(t)) tags.add('S&T');
+  if (/constitution|parliament|election|court|lok sabha|rajya sabha|supreme court/.test(t)) tags.add('Polity');
+  if (/governance|scheme|policy|ministry|government/.test(t)) tags.add('Governance');
+  if (/health|vaccine|disease|ayushman|education|nep/.test(t)) tags.add('Social');
+  if (/foreign|bilateral|treaty|summit|g20|international|mou/.test(t)) tags.add('IR');
+  if (/disaster|ndma|flood|cyclone/.test(t)) tags.add('Disaster');
+  return [...tags];
+}
+
+function categoryKeyword(gsTags, text) {
+  const t = text.toLowerCase();
+  if (gsTags.includes('Defence') || /missile|drdo|army|navy|defence/.test(t)) return 'military technology India defence';
+  if (gsTags.includes('Economy') || /bank|rbi|sebi|budget|gdp|finance/.test(t)) return 'economy finance India banking';
+  if (gsTags.includes('Environment') || /climate|forest|wildlife|carbon|weather|monsoon/.test(t)) return 'environment nature green India';
+  if (gsTags.includes('S&T') || /isro|space|ai|digital|tech|science/.test(t)) return 'technology science innovation India';
+  if (gsTags.includes('Polity') || /parliament|election|court|constitution/.test(t)) return 'parliament governance democracy India';
+  if (gsTags.includes('IR') || /bilateral|summit|diplomacy|g20|foreign/.test(t)) return 'diplomacy world international India';
+  if (gsTags.includes('Agriculture') || /farmer|crop|kisan|msp/.test(t)) return 'agriculture farming rural India';
+  if (gsTags.includes('Social') || /health|education|scheme|welfare/.test(t)) return 'education health society India';
+  return 'India government current affairs';
 }
 
 async function downloadFile(url, dest) {
@@ -135,43 +173,61 @@ async function downloadFile(url, dest) {
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
 
-async function fetchBackground(title) {
-  const query = `${extractKeywords(title)} India`; // "India" always appended, per what you asked for
+async function pexelsVideo(query) {
+  const res = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=1&orientation=portrait`, { headers: { Authorization: PEXELS_KEY } });
+  const data = await res.json();
+  const vid = data.videos?.[0];
+  if (!vid) return null;
+  const file = vid.video_files.find(f => f.width <= f.height) || vid.video_files[0];
+  if (!file) return null;
+  const bgPath = path.join(WORKDIR, 'bg.mp4');
+  await downloadFile(file.link, bgPath);
+  return { type: 'video', path: bgPath };
+}
+
+async function pexelsImage(query) {
+  const res = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=1&orientation=portrait`, { headers: { Authorization: PEXELS_KEY } });
+  const data = await res.json();
+  const photo = data.photos?.[0];
+  if (!photo) return null;
+  const bgPath = path.join(WORKDIR, 'bg.jpg');
+  await downloadFile(photo.src.large2x || photo.src.large, bgPath);
+  return { type: 'image', path: bgPath };
+}
+
+async function fetchBackground(title, script) {
+  // Category-based query is the PRIMARY attempt now, not a fallback — a
+  // coined scheme name (e.g. "Mission Mausam") rarely has real matching
+  // stock footage, so Pexels fuzzy-matches on whatever generic word is
+  // left (usually "India") and returns something unrelated, like a flag.
+  // Topic keywords drawn from the article's actual content are much more
+  // reliably photographable and relevant than the scheme's literal name.
+  const gsTags = guessGS(title + ' ' + script);
+  const query = categoryKeyword(gsTags, title + ' ' + script) + ' India';
   try {
-    const res = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=1&orientation=portrait`, { headers: { Authorization: PEXELS_KEY } });
-    const data = await res.json();
-    const vid = data.videos?.[0];
-    if (vid) {
-      const file = vid.video_files.find(f => f.width <= f.height) || vid.video_files[0];
-      if (file) {
-        const bgPath = path.join(WORKDIR, 'bg.mp4');
-        await downloadFile(file.link, bgPath);
-        return { type: 'video', path: bgPath };
-      }
-    }
+    const v = await pexelsVideo(query);
+    if (v) return v;
   } catch (e) { console.warn('Pexels video failed:', e.message); }
   try {
-    const res = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=1&orientation=portrait`, { headers: { Authorization: PEXELS_KEY } });
-    const data = await res.json();
-    const photo = data.photos?.[0];
-    if (photo) {
-      const bgPath = path.join(WORKDIR, 'bg.jpg');
-      await downloadFile(photo.src.large2x || photo.src.large, bgPath);
-      return { type: 'image', path: bgPath };
-    }
+    const p = await pexelsImage(query);
+    if (p) return p;
   } catch (e) { console.warn('Pexels image failed:', e.message); }
   return null; // caller falls back to a plain dark background, never a broken render
 }
 
 // ---------- assemble the final video ----------
 async function renderVideo(item) {
-  const audioPath = await fetchNarration(item.script);
+  // Sanitized once, used for BOTH narration and captions, so what's heard
+  // and what's shown always match exactly.
+  const script = sanitizeScript(item.script);
+
+  const audioPath = await fetchNarration(script);
   const duration = getAudioDuration(audioPath);
-  const timeline = buildWordTimeline(item.script, duration);
+  const timeline = buildWordTimeline(script, duration);
   const assPath = path.join(WORKDIR, 'captions.ass');
   fs.writeFileSync(assPath, buildAss(timeline));
 
-  const bg = await fetchBackground(item.title);
+  const bg = await fetchBackground(item.title, script);
   const W = 1080, H = 1920;
 
   const mainBg = path.join(WORKDIR, 'main_bg.mp4');
@@ -186,7 +242,6 @@ async function renderVideo(item) {
   const captioned = path.join(WORKDIR, 'main_captioned.mp4');
   sh(`ffmpeg -y -i "${mainBg}" -i "${audioPath}" -vf "eq=brightness=-0.08,subtitles=${assPath}" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "${captioned}"`);
 
-  // Intro title card: first frame of the same background, headline text, ~2.5s
   const introBg = path.join(WORKDIR, 'intro_bg.png');
   sh(`ffmpeg -y -i "${mainBg}" -frames:v 1 "${introBg}"`);
   const introDur = 2.5;
@@ -226,7 +281,7 @@ async function uploadToYouTube(videoPath, item) {
       description: `${item.title}\n\n${item.url || ''}\n\n#UPSC #CurrentAffairs #Shorts`,
       categoryId: '25'
     },
-    status: { privacyStatus: 'private', selfDeclaredMadeForKids: false } // private, per your call — flip to public once you've checked quality
+    status: { privacyStatus: 'private', selfDeclaredMadeForKids: false }
   };
 
   const boundary = 'upsc_hub_' + Date.now();
@@ -247,11 +302,11 @@ async function uploadToYouTube(videoPath, item) {
   return `https://youtube.com/shorts/${data.id}`;
 }
 
-async function completeQueueItem(id, success, videoUrl) {
+async function completeQueueItem(id, success, videoUrl, error) {
   await fetch(`${WORKER_URL}?mode=queue&action=complete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, success, videoUrl })
+    body: JSON.stringify({ id, success, videoUrl, error })
   });
 }
 
