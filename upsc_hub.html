@@ -567,9 +567,11 @@ function App(){
         "UPSC Angle: also add paper(GS paper name)\n"+
         "Exam Ready: bullets = \"TERM: definition\" format\n"+
         "caption: 200-250 char Instagram caption with emojis and 5 hashtags\n"+
-        "ytShortScript: 60-second script for YouTube Shorts automation. Pure narration, no labels/directions. "+
-        "Start with a shocking fact or question (3 seconds). Then rapid-fire specific facts from the article (one punchy sentence each). "+
-        "End with UPSC connection and save prompt. Max 160 words. Every word must earn its place.";
+        "ytShortScript: 60-second script for YouTube Shorts, pure narration only, no labels/directions, max 160 words — for display/copying only.\n"+
+        "ytScenes: array of 6 to 8 scene objects for a CINEMATIC video — this is a fast-paced documentary-trailer, not a news reading. Every word and every visual must earn its place; this sets the benchmark for what these videos should look like.\n"+
+        "Each scene object has:\n"+
+        "  narration: ONE punchy sentence (8-14 words) spoken with energy — active voice, zero filler. Scene 1 MUST hook attention in its first 3 words (a bold claim, a striking number, or a question — never a dry setup). The final scene must land with impact and close with a short call-to-action to follow for more UPSC updates.\n"+
+        "  visual: a SPECIFIC, CONCRETE, PHOTOGRAPHABLE description (4-8 words) of exactly what's on screen — real people, places, objects, or actions a stock-footage search engine could realistically match. NEVER use scheme names, acronyms, or abstract ideas as the visual (WRONG: \"Mission Mausam dashboard\" — RIGHT: \"meteorologist analyzing weather satellite data\"). Every visual must be unmistakably set in India — Indian people, places, institutions, uniforms, landscapes — never generic or Western-coded stock imagery. No two scenes may share the same visual.";
 
       const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"));
       setCarousel(extractJSONObj(raw));setShowCar(true);
@@ -637,8 +639,8 @@ function App(){
   // button just enqueues; it never triggers anything directly, so no
   // GitHub token is ever exposed client-side.
   const addToQueue = async () => {
-    const script = carousel?.ytShortScript;
-    if(!script){notify("Generate carousel first");return;}
+    const scenes = carousel?.ytScenes;
+    if(!scenes || !scenes.length){notify("Generate carousel first");return;}
     const px=ls("upsc_gasurl")||DEFAULT_GAS;
     if(!px){notify("❌ Proxy URL not set in ⚙️ Settings");return;}
     setAddingQueue(true);setQueueStatus("Adding to queue…");
@@ -646,7 +648,7 @@ function App(){
       const res=await fetch(`${px}?mode=queue&action=add`,{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({title:article?.title||"Untitled",url:article?.link||"",script})
+        body:JSON.stringify({title:article?.title||"Untitled",url:article?.link||"",scenes})
       });
       const data=await res.json();
       if(data.error) throw new Error(data.error);
