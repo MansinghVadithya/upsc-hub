@@ -1,7 +1,8 @@
-// Renders one queued Short (word-by-word captions, India-only background,
-// headline intro card) and uploads it to YouTube as 'private'. Runs
-// entirely on the Actions runner — no browser involved, unlike the old
-// ffmpeg.wasm approach that kept hanging.
+// Renders one queued Short as a CINEMATIC multi-scene video: 6-8 scenes,
+// each with its own narration, its own Gemini-chosen background, and its
+// own word-by-word captions — cut together with short crossfades. The
+// first scene doubles as the opener (headline overlaid on it) rather than
+// a separate static title card. Runs entirely on the Actions runner.
 
 const fs = require('fs');
 const path = require('path');
@@ -15,6 +16,8 @@ const YT_CLIENT_SECRET = process.env.YOUTUBE_CLIENT_SECRET;
 const YT_REFRESH_TOKEN = process.env.YOUTUBE_REFRESH_TOKEN;
 
 const WORKDIR = '/tmp/render';
+const XFADE = 0.4; // short crossfade, per your call
+const W = 1080, H = 1920;
 fs.mkdirSync(WORKDIR, { recursive: true });
 
 function sh(cmd) {
@@ -44,13 +47,7 @@ async function main() {
   }
 }
 
-// ---------- text cleanup, shared by narration AND captions so they always
-// match exactly ----------
-// Strips markdown emphasis characters that TTS engines read literally
-// (VoiceRSS was audibly saying "underscore"), and groups bare numbers with
-// commas so they're read as quantities ("two thousand") instead of digit
-// by digit ("two zero zero zero") — VoiceRSS's number-reading only kicks
-// in reliably with comma-grouped numerals.
+// ---------- text cleanup ----------
 function sanitizeScript(text) {
   return text
     .replace(/[*_~`]/g, '')
@@ -59,14 +56,19 @@ function sanitizeScript(text) {
     .trim();
 }
 
-// ---------- narration audio ----------
-async function fetchNarration(script) {
-  const res = await fetch(`${WORKER_URL}?mode=tts&text=${encodeURIComponent(script)}&key=${encodeURIComponent(VOICERSS_KEY)}`);
+// ---------- narration audio (per scene), loudness-normalized ----------
+async function fetchNarration(text, outPath) {
+  const res = await fetch(`${WORKER_URL}?mode=tts&text=${encodeURIComponent(text)}&key=${encodeURIComponent(VOICERSS_KEY)}`);
   const data = await res.json();
   if (data.error) throw new Error('VoiceRSS: ' + data.error);
-  const audioPath = path.join(WORKDIR, 'narration.mp3');
-  fs.writeFileSync(audioPath, Buffer.from(data.audio, 'base64'));
-  return audioPath;
+  const rawPath = outPath.replace('.mp3', '_raw.mp3');
+  fs.writeFileSync(rawPath, Buffer.from(data.audio, 'base64'));
+  // loudnorm brings VoiceRSS's quiet output up to a normal broadcast/social
+  // loudness target (-16 LUFS, YouTube/Spotify's own reference level) —
+  // fixes the "too soft to listen to" complaint without risking the
+  // clipping/distortion a blind volume multiply would cause.
+  sh(`ffmpeg -y -i "${rawPath}" -af "loudnorm=I=-16:TP=-1.5:LRA=11" -ar 44100 "${outPath}"`);
+  return outPath;
 }
 
 function getAudioDuration(audioPath) {
@@ -74,47 +76,32 @@ function getAudioDuration(audioPath) {
   return parseFloat(out);
 }
 
-// ---------- word timing (character-proportional — same estimate approach as the live client, one level deeper: sentence -> word) ----------
-function splitSentences(script) {
-  return script.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
-}
-
-function buildWordTimeline(script, totalDuration) {
-  const sentences = splitSentences(script);
-  const sentenceChars = sentences.map(s => s.length);
-  const totalChars = sentenceChars.reduce((a, b) => a + b, 0) || 1;
+// ---------- word timing within a single scene (character-proportional) ----------
+function buildWordTimeline(sentence, totalDuration) {
+  const words = sentence.split(/\s+/).filter(Boolean);
+  const wordChars = words.map(w => w.length);
+  const totalChars = wordChars.reduce((a, b) => a + b, 0) || 1;
   let t = 0;
-  const timeline = [];
-  sentences.forEach((sentence, i) => {
-    const sentDur = totalDuration * (sentenceChars[i] / totalChars);
-    const words = sentence.split(/\s+/).filter(Boolean);
-    const wordChars = words.map(w => w.length);
-    const totalWordChars = wordChars.reduce((a, b) => a + b, 0) || 1;
-    let wt = t;
-    const wordTimes = words.map((w, wi) => {
-      const wDur = sentDur * (wordChars[wi] / totalWordChars);
-      const start = wt, end = wt + wDur;
-      wt = end;
-      return { word: w, start, end };
-    });
-    timeline.push({ words: wordTimes });
-    t += sentDur;
+  return words.map((w, i) => {
+    const dur = totalDuration * (wordChars[i] / totalChars);
+    const start = t, end = t + dur;
+    t = end;
+    return { word: w, start, end };
   });
-  return timeline;
 }
 
-// ---------- ASS captions, one word highlighted at a time, one line on screen ----------
+// ---------- ASS captions for one scene ----------
 function assTime(t) {
   const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
   return `${h}:${String(m).padStart(2,'0')}:${s.toFixed(2).padStart(5,'0')}`;
 }
 function escapeAss(s) { return s.replace(/\\/g,'\\\\').replace(/\n/g,'\\N'); }
 
-function buildAss(timeline) {
+function buildAss(words) {
   const header = `[Script Info]
 ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: ${W}
+PlayResY: ${H}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
@@ -126,45 +113,38 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   const HIGHLIGHT = '&H4AD5FF';
   const WHITE = '&HFFFFFF';
   let lines = '';
-  timeline.forEach(({ words }) => {
-    words.forEach((w, wi) => {
-      const textParts = words.map((ww, i2) =>
-        i2 === wi ? `{\\c${HIGHLIGHT}}${escapeAss(ww.word)}{\\c${WHITE}}` : escapeAss(ww.word)
-      ).join(' ');
-      lines += `Dialogue: 0,${assTime(w.start)},${assTime(w.end)},Default,,0,0,0,,${textParts}\n`;
-    });
+  words.forEach((w, wi) => {
+    const textParts = words.map((ww, i2) =>
+      i2 === wi ? `{\\c${HIGHLIGHT}}${escapeAss(ww.word)}{\\c${WHITE}}` : escapeAss(ww.word)
+    ).join(' ');
+    lines += `Dialogue: 0,${assTime(w.start)},${assTime(w.end)},Default,,0,0,0,,${textParts}\n`;
   });
   return header + lines;
 }
 
-// ---------- background media — category-based (matches the app's own
-// guessGS/getUnsplashKw system), India-only, video first then still image ----------
+// ---------- background media — Gemini gives a specific per-scene search
+// phrase directly, no keyword-guessing needed; category fallback only if
+// that specific search comes back empty ----------
 function guessGS(text) {
   const t = text.toLowerCase();
   const tags = new Set();
-  if (/economy|gdp|fiscal|budget|inflation|tax|finance|trade|fdi|monetary|banking|nbfc|sebi|market|bond/.test(t)) tags.add('Economy');
-  if (/defence|military|army|navy|missile|drdo|terror/.test(t)) tags.add('Defence');
-  if (/environment|climate|forest|pollution|biodiversity|carbon|emission|ramsar|weather|monsoon/.test(t)) tags.add('Environment');
-  if (/agriculture|farmer|crop|msp|irrigation|kisan/.test(t)) tags.add('Agriculture');
-  if (/space|isro|technology|innovation|digital|quantum|nuclear|artificial intelligence/.test(t)) tags.add('S&T');
-  if (/constitution|parliament|election|court|lok sabha|rajya sabha|supreme court/.test(t)) tags.add('Polity');
-  if (/governance|scheme|policy|ministry|government/.test(t)) tags.add('Governance');
-  if (/health|vaccine|disease|ayushman|education|nep/.test(t)) tags.add('Social');
-  if (/foreign|bilateral|treaty|summit|g20|international|mou/.test(t)) tags.add('IR');
-  if (/disaster|ndma|flood|cyclone/.test(t)) tags.add('Disaster');
+  if (/economy|gdp|fiscal|budget|inflation|tax|finance|trade|fdi|monetary|banking|market/.test(t)) tags.add('Economy');
+  if (/defence|military|army|navy|missile|drdo/.test(t)) tags.add('Defence');
+  if (/environment|climate|forest|pollution|weather|monsoon/.test(t)) tags.add('Environment');
+  if (/agriculture|farmer|crop|kisan/.test(t)) tags.add('Agriculture');
+  if (/space|isro|technology|digital|science/.test(t)) tags.add('S&T');
+  if (/parliament|election|court|constitution/.test(t)) tags.add('Polity');
+  if (/health|education|scheme|welfare/.test(t)) tags.add('Social');
   return [...tags];
 }
-
-function categoryKeyword(gsTags, text) {
-  const t = text.toLowerCase();
-  if (gsTags.includes('Defence') || /missile|drdo|army|navy|defence/.test(t)) return 'military technology India defence';
-  if (gsTags.includes('Economy') || /bank|rbi|sebi|budget|gdp|finance/.test(t)) return 'economy finance India banking';
-  if (gsTags.includes('Environment') || /climate|forest|wildlife|carbon|weather|monsoon/.test(t)) return 'environment nature green India';
-  if (gsTags.includes('S&T') || /isro|space|ai|digital|tech|science/.test(t)) return 'technology science innovation India';
-  if (gsTags.includes('Polity') || /parliament|election|court|constitution/.test(t)) return 'parliament governance democracy India';
-  if (gsTags.includes('IR') || /bilateral|summit|diplomacy|g20|foreign/.test(t)) return 'diplomacy world international India';
-  if (gsTags.includes('Agriculture') || /farmer|crop|kisan|msp/.test(t)) return 'agriculture farming rural India';
-  if (gsTags.includes('Social') || /health|education|scheme|welfare/.test(t)) return 'education health society India';
+function categoryFallback(gsTags) {
+  if (gsTags.includes('Defence')) return 'military India defence';
+  if (gsTags.includes('Economy')) return 'economy finance India';
+  if (gsTags.includes('Environment')) return 'environment nature India';
+  if (gsTags.includes('S&T')) return 'technology science India';
+  if (gsTags.includes('Polity')) return 'parliament governance India';
+  if (gsTags.includes('Agriculture')) return 'agriculture farming India';
+  if (gsTags.includes('Social')) return 'education health India';
   return 'India government current affairs';
 }
 
@@ -173,86 +153,134 @@ async function downloadFile(url, dest) {
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
 
-async function pexelsVideo(query) {
+async function pexelsVideo(query, dest) {
   const res = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=1&orientation=portrait`, { headers: { Authorization: PEXELS_KEY } });
   const data = await res.json();
   const vid = data.videos?.[0];
   if (!vid) return null;
   const file = vid.video_files.find(f => f.width <= f.height) || vid.video_files[0];
   if (!file) return null;
-  const bgPath = path.join(WORKDIR, 'bg.mp4');
-  await downloadFile(file.link, bgPath);
-  return { type: 'video', path: bgPath };
+  await downloadFile(file.link, dest);
+  return { type: 'video', path: dest };
 }
 
-async function pexelsImage(query) {
+async function pexelsImage(query, dest) {
   const res = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=1&orientation=portrait`, { headers: { Authorization: PEXELS_KEY } });
   const data = await res.json();
   const photo = data.photos?.[0];
   if (!photo) return null;
-  const bgPath = path.join(WORKDIR, 'bg.jpg');
-  await downloadFile(photo.src.large2x || photo.src.large, bgPath);
-  return { type: 'image', path: bgPath };
+  await downloadFile(photo.src.large2x || photo.src.large, dest);
+  return { type: 'image', path: dest };
 }
 
-async function fetchBackground(title, script) {
-  // Category-based query is the PRIMARY attempt now, not a fallback — a
-  // coined scheme name (e.g. "Mission Mausam") rarely has real matching
-  // stock footage, so Pexels fuzzy-matches on whatever generic word is
-  // left (usually "India") and returns something unrelated, like a flag.
-  // Topic keywords drawn from the article's actual content are much more
-  // reliably photographable and relevant than the scheme's literal name.
-  const gsTags = guessGS(title + ' ' + script);
-  const query = categoryKeyword(gsTags, title + ' ' + script) + ' India';
+async function fetchSceneBackground(visualPhrase, articleTitle, idx) {
+  const query = `${visualPhrase} India`;
+  const dest = path.join(WORKDIR, `bg_${idx}`);
   try {
-    const v = await pexelsVideo(query);
+    const v = await pexelsVideo(query, dest + '.mp4');
     if (v) return v;
-  } catch (e) { console.warn('Pexels video failed:', e.message); }
+  } catch (e) { console.warn(`Scene ${idx} Pexels video failed:`, e.message); }
   try {
-    const p = await pexelsImage(query);
+    const p = await pexelsImage(query, dest + '.jpg');
     if (p) return p;
-  } catch (e) { console.warn('Pexels image failed:', e.message); }
-  return null; // caller falls back to a plain dark background, never a broken render
+  } catch (e) { console.warn(`Scene ${idx} Pexels image failed:`, e.message); }
+  // Specific visual phrase found nothing — fall back to a broad category
+  // term rather than leaving this one scene as a plain color card.
+  try {
+    const fallbackQuery = categoryFallback(guessGS(articleTitle)) ;
+    const v = await pexelsVideo(fallbackQuery, dest + '_fb.mp4');
+    if (v) return v;
+  } catch (e) { /* fall through to plain background */ }
+  return null;
 }
 
-// ---------- assemble the final video ----------
-async function renderVideo(item) {
-  // Sanitized once, used for BOTH narration and captions, so what's heard
-  // and what's shown always match exactly.
-  const script = sanitizeScript(item.script);
+// ---------- build one scene's clip: background + captions (+ headline if scene 0) ----------
+async function buildSceneClip(scene, idx, isFirst, headline) {
+  const narrationRaw = sanitizeScript(scene.narration);
+  const narrationPath = path.join(WORKDIR, `narr_${idx}.mp3`);
+  await fetchNarration(narrationRaw, narrationPath);
+  const sceneDur = getAudioDuration(narrationPath);
 
-  const audioPath = await fetchNarration(script);
-  const duration = getAudioDuration(audioPath);
-  const timeline = buildWordTimeline(script, duration);
-  const assPath = path.join(WORKDIR, 'captions.ass');
-  fs.writeFileSync(assPath, buildAss(timeline));
+  const words = buildWordTimeline(narrationRaw, sceneDur);
+  const assPath = path.join(WORKDIR, `cap_${idx}.ass`);
+  fs.writeFileSync(assPath, buildAss(words));
 
-  const bg = await fetchBackground(item.title, script);
-  const W = 1080, H = 1920;
+  const bg = await fetchSceneBackground(scene.visual, headline, idx);
 
-  const mainBg = path.join(WORKDIR, 'main_bg.mp4');
+  // Padded by XFADE at the tail (no captions in the pad) so the crossfade
+  // into the next scene has real footage to blend with instead of cutting
+  // into the last word of this scene's narration.
+  const clipDur = sceneDur + XFADE;
+  const bgClip = path.join(WORKDIR, `bgclip_${idx}.mp4`);
   if (bg?.type === 'video') {
-    sh(`ffmpeg -y -stream_loop -1 -i "${bg.path}" -t ${duration} -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" -an "${mainBg}"`);
+    sh(`ffmpeg -y -stream_loop -1 -i "${bg.path}" -t ${clipDur} -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" -an "${bgClip}"`);
   } else if (bg?.type === 'image') {
-    sh(`ffmpeg -y -loop 1 -i "${bg.path}" -t ${duration} -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" "${mainBg}"`);
+    sh(`ffmpeg -y -loop 1 -i "${bg.path}" -t ${clipDur} -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" "${bgClip}"`);
   } else {
-    sh(`ffmpeg -y -f lavfi -i "color=c=0x0c0c16:s=${W}x${H}:d=${duration}" "${mainBg}"`);
+    sh(`ffmpeg -y -f lavfi -i "color=c=0x0c0c16:s=${W}x${H}:d=${clipDur}" "${bgClip}"`);
   }
 
-  const captioned = path.join(WORKDIR, 'main_captioned.mp4');
-  sh(`ffmpeg -y -i "${mainBg}" -i "${audioPath}" -vf "eq=brightness=-0.08,subtitles=${assPath}" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "${captioned}"`);
+  // Headline overlay only on scene 0 — this scene doubles as the opener,
+  // no separate static title card.
+  const headlineFilter = isFirst
+    ? `,drawtext=font='DejaVu Sans Bold':text='${headline.replace(/'/g,"\\'").replace(/:/g,'\\:')}':fontcolor=white:fontsize=58:x=(w-text_w)/2:y=180:line_spacing=10:box=1:boxcolor=black@0.45:boxborderw=18:enable='between(t,0,2.3)'`
+    : '';
 
-  const introBg = path.join(WORKDIR, 'intro_bg.png');
-  sh(`ffmpeg -y -i "${mainBg}" -frames:v 1 "${introBg}"`);
-  const introDur = 2.5;
-  const safeTitle = item.title.replace(/'/g, "\\'").replace(/:/g, '\\:');
-  const intro = path.join(WORKDIR, 'intro.mp4');
-  sh(`ffmpeg -y -loop 1 -i "${introBg}" -t ${introDur} -f lavfi -i "anullsrc=r=44100:cl=stereo" -vf "scale=${W}:${H},eq=brightness=-0.25,drawtext=font='DejaVu Sans Bold':text='${safeTitle}':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=12:box=1:boxcolor=black@0.35:boxborderw=20" -c:v libx264 -pix_fmt yuv420p -shortest "${intro}"`);
+  // Audio padded to match clipDur exactly (real narration + XFADE of
+  // silence) — this silence-into-next-speech overlap is what lets the
+  // crossfade sound clean instead of blending two voices together.
+  const audioPadded = path.join(WORKDIR, `narr_pad_${idx}.mp3`);
+  sh(`ffmpeg -y -i "${narrationPath}" -af "apad=pad_dur=${XFADE}" -t ${clipDur} "${audioPadded}"`);
 
-  const listPath = path.join(WORKDIR, 'concat.txt');
-  fs.writeFileSync(listPath, `file '${intro}'\nfile '${captioned}'\n`);
+  const clip = path.join(WORKDIR, `scene_${idx}.mp4`);
+  sh(`ffmpeg -y -i "${bgClip}" -i "${audioPadded}" -vf "eq=brightness=-0.08,subtitles=${assPath}${headlineFilter}" -c:v libx264 -pix_fmt yuv420p -c:a aac "${clip}"`);
+
+  return { path: clip, duration: clipDur, contentDuration: sceneDur };
+}
+
+// ---------- chain scenes together with matching video (xfade) and audio (acrossfade) crossfades ----------
+function buildCrossfadeGraph(n, durations) {
+  let videoChain = '', audioChain = '';
+  let vPrev = '0:v', aPrev = '0:a';
+  let cum = durations[0];
+  for (let i = 1; i < n; i++) {
+    const offset = cum - XFADE;
+    const vOut = i === n - 1 ? 'vout' : `v${i}`;
+    const aOut = i === n - 1 ? 'aout' : `a${i}`;
+    videoChain += `[${vPrev}][${i}:v]xfade=transition=fade:duration=${XFADE}:offset=${offset.toFixed(3)}[${vOut}];`;
+    audioChain += `[${aPrev}][${i}:a]acrossfade=d=${XFADE}:c1=tri:c2=tri[${aOut}];`;
+    vPrev = vOut; aPrev = aOut;
+    cum += durations[i] - XFADE;
+  }
+  return { graph: videoChain + audioChain, totalDuration: cum };
+}
+
+// ---------- assemble the final cinematic video ----------
+async function renderVideo(item) {
+  // Backward-compatible: old-format items (single flat script, no scenes)
+  // still render as one plain scene rather than erroring out.
+  const scenes = (item.scenes && item.scenes.length)
+    ? item.scenes
+    : [{ narration: item.script, visual: 'India government building' }];
+
+  const clips = [];
+  for (let i = 0; i < scenes.length; i++) {
+    console.log(`Building scene ${i + 1}/${scenes.length}: ${scenes[i].narration}`);
+    clips.push(await buildSceneClip(scenes[i], i, i === 0, item.title));
+  }
+
+  if (clips.length === 1) {
+    // Nothing to crossfade — just trim off the trailing pad and ship it.
+    const finalPath = path.join(WORKDIR, 'final.mp4');
+    sh(`ffmpeg -y -i "${clips[0].path}" -t ${clips[0].contentDuration} -c copy "${finalPath}"`);
+    return finalPath;
+  }
+
+  const inputs = clips.map(c => `-i "${c.path}"`).join(' ');
+  const { graph, totalDuration } = buildCrossfadeGraph(clips.length, clips.map(c => c.duration));
+  const contentTotal = clips.reduce((a, c) => a + c.contentDuration, 0);
   const finalPath = path.join(WORKDIR, 'final.mp4');
-  sh(`ffmpeg -y -f concat -safe 0 -i "${listPath}" -c copy "${finalPath}"`);
+  sh(`ffmpeg -y ${inputs} -filter_complex "${graph}" -map "[vout]" -map "[aout]" -t ${Math.min(totalDuration, contentTotal + XFADE)} -c:v libx264 -pix_fmt yuv420p -c:a aac "${finalPath}"`);
   return finalPath;
 }
 
