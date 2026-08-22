@@ -17,6 +17,7 @@ const YT_REFRESH_TOKEN = process.env.YOUTUBE_REFRESH_TOKEN;
 
 const WORKDIR = '/tmp/render';
 const XFADE = 0.4; // short crossfade, per your call
+const FPS = 25;
 const W = 1080, H = 1920;
 fs.mkdirSync(WORKDIR, { recursive: true });
 
@@ -212,12 +213,12 @@ async function buildSceneClip(scene, idx, isFirst, headline) {
   // into the last word of this scene's narration.
   const clipDur = sceneDur + XFADE;
   const bgClip = path.join(WORKDIR, `bgclip_${idx}.mp4`);
-  if (bg?.type === 'video') {
-    sh(`ffmpeg -y -stream_loop -1 -i "${bg.path}" -t ${clipDur} -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" -an "${bgClip}"`);
+     if (bg?.type === 'video') {
+    sh(`ffmpeg -y -stream_loop -1 -i "${bg.path}" -t ${clipDur} -vf "fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" -an "${bgClip}"`);
   } else if (bg?.type === 'image') {
-    sh(`ffmpeg -y -loop 1 -i "${bg.path}" -t ${clipDur} -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" "${bgClip}"`);
+    sh(`ffmpeg -y -loop 1 -i "${bg.path}" -t ${clipDur} -vf "fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" "${bgClip}"`);
   } else {
-    sh(`ffmpeg -y -f lavfi -i "color=c=0x0c0c16:s=${W}x${H}:d=${clipDur}" "${bgClip}"`);
+    sh(`ffmpeg -y -f lavfi -i "color=c=0x0c0c16:s=${W}x${H}:d=${clipDur}:r=${FPS}" "${bgClip}"`);
   }
 
   // Headline overlay only on scene 0 — this scene doubles as the opener,
@@ -233,7 +234,7 @@ async function buildSceneClip(scene, idx, isFirst, headline) {
   sh(`ffmpeg -y -i "${narrationPath}" -af "apad=pad_dur=${XFADE}" -t ${clipDur} "${audioPadded}"`);
 
   const clip = path.join(WORKDIR, `scene_${idx}.mp4`);
-  sh(`ffmpeg -y -i "${bgClip}" -i "${audioPadded}" -vf "eq=brightness=-0.08,subtitles=${assPath}${headlineFilter}" -c:v libx264 -pix_fmt yuv420p -c:a aac "${clip}"`);
+  sh(`ffmpeg -y -i "${bgClip}" -i "${audioPadded}" -vf "fps=${FPS},eq=brightness=-0.08,subtitles=${assPath}${headlineFilter}" -c:v libx264 -pix_fmt yuv420p -c:a aac "${clip}"`);
 
   return { path: clip, duration: clipDur, contentDuration: sceneDur };
 }
