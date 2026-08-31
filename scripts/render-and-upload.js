@@ -223,9 +223,18 @@ async function buildSceneClip(scene, idx, isFirst, headline) {
 
   // Headline overlay only on scene 0 — this scene doubles as the opener,
   // no separate static title card.
-  const headlineFilter = isFirst
-    ? `,drawtext=font='DejaVu Sans Bold':text='${headline.replace(/'/g,"\\'").replace(/:/g,'\\:')}':fontcolor=white:fontsize=58:x=(w-text_w)/2:y=180:line_spacing=10:box=1:boxcolor=black@0.45:boxborderw=18:enable='between(t,0,2.3)'`
-    : '';
+   
+  // Headline is written to a file and read via textfile= instead of
+  // inlined as text='...' — ffmpeg's filter-string quoting is fragile with
+  // real headlines (apostrophes, colons, dashes all appear in real news
+  // titles), and reading from a file sidesteps that escaping problem
+  // entirely rather than trying to hand-escape every special character.
+  let headlineFilter = '';
+  if (isFirst) {
+    const headlineFile = path.join(WORKDIR, `headline_${idx}.txt`);
+    fs.writeFileSync(headlineFile, headline.replace(/\r?\n/g, ' '));
+    headlineFilter = `,drawtext=font='DejaVu Sans Bold':textfile='${headlineFile}':fontcolor=white:fontsize=58:x=(w-text_w)/2:y=180:line_spacing=10:box=1:boxcolor=black@0.45:boxborderw=18:enable='between(t\\,0\\,2.3)'`;
+  }
 
   // Audio padded to match clipDur exactly (real narration + XFADE of
   // silence) — this silence-into-next-speech overlap is what lets the
