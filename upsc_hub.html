@@ -665,6 +665,28 @@ function App(){
     return ()=>clearInterval(iv);
   },[view]);
 
+  // Removes a still-pending item from the queue — only ever called on
+  // pending items (the UI doesn't offer this for success/processing), so
+  // there's no risk of deleting something already uploaded or mid-render.
+  const deleteQueueItem = async id => {
+    const px=ls("upsc_gasurl")||DEFAULT_GAS;
+    if(!px)return;
+    setQueueItems(items=>items.filter(it=>it.id!==id)); // optimistic — feels instant
+    try{
+      const res=await fetch(`${px}?mode=queue&action=delete`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({id})
+      });
+      const data=await res.json();
+      if(data.error)throw new Error(data.error);
+      notify("🗑️ Removed from queue");
+    }catch(e){
+      notify("❌ Failed to remove: "+e.message);
+      fetchQueueList(); // undo the optimistic removal by re-syncing with the Worker
+    }
+  };
+
   const addToQueue = async () => {
     const scenes = carousel?.ytScenes;
     if(!scenes || !scenes.length){notify("Generate carousel first");return;}
@@ -1256,8 +1278,10 @@ function App(){
                     <a href={it.videoUrl} target="_blank" rel="noopener" style={{fontSize:12,color:"#10B981",textDecoration:"none"}}>▶ Watch on YouTube</a>}
                   {it.status==="failed"&&it.lastError&&
                     <p style={{fontSize:11,color:"#F87171",opacity:0.8,marginTop:2}}>{it.lastError}</p>}
-                  {it.status==="pending"&&it.lastError&&
-                    <p style={{fontSize:11,opacity:0.4,marginTop:2}}>Last attempt failed, will retry automatically: {it.lastError}</p>}
+                  {it.status==="pending"&&<>
+                    {it.lastError&&<p style={{fontSize:11,opacity:0.4,marginTop:2,marginBottom:8}}>Last attempt failed, will retry automatically: {it.lastError}</p>}
+                    <button onClick={()=>deleteQueueItem(it.id)} style={{background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.2)",color:"#F87171",padding:"5px 10px",borderRadius:7,fontSize:11,marginTop:it.lastError?0:8}}>Remove</button>
+                  </>}
                 </div>
               );
             })}
