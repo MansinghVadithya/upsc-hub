@@ -283,6 +283,7 @@ function App(){
   const [loadingArchive,setLoadingArchive]=useState(false);
   const [article,setArticle]=useState(null);
   const [pasteText,setPasteText]=useState("");
+  const [articleFullText,setArticleFullText]=useState("");
   const [showManual,setShowManual]=useState(false);
   const [queueItems,setQueueItems]=useState([]);
   const [loadingQueueList,setLoadingQueueList]=useState(false);
@@ -522,28 +523,35 @@ function App(){
 
       const schema=
         '{"summary":"2-3 sentences — ONLY new specific facts (names/dates/numbers) NOT repeated in keyPoints",' +
-        '"keyPoints":["NEW fact 1 not in summary","NEW fact 2","NEW fact 3","NEW fact 4","NEW fact 5"],' +
-        '"whyItMatters":"1 sentence real-world impact",' +
-        '"upscAngle":"Paper + topic + question type (1 sentence)",' +
-        '"possibleQuestion":"One UPSC question",' +
-        '"gsTags":["GS tag"],' +
-        '"keywords":["k1","k2","k3","k4","k5"],' +
-        '"mnemonic":"trick or empty"}';
+        '"keyPoints":["5 distinct NEW facts, each anchored to a concrete number, name, or date not already in summary"],' +
+        '"whyItMatters":"1 sentence — the SPECIFIC downstream consequence this causes, not a generic benefit statement",' +
+        '"upscAngle":"Exact GS Paper + specific topic area + likely question type (factual/analytical/opinion) — 1 sentence",' +
+        '"possibleQuestion":"One realistic Mains-style analytical question a real UPSC paper could plausibly ask about this — not a Prelims fact-recall stem",' +
+        '"gsTags":["1-2 precise GS paper tags, e.g. GS2—Governance"],' +
+        '"keywords":["5 precise, topic-specific search keywords — never generic terms like india or government alone"],' +
+        '"mnemonic":"a genuinely memorable trick ONLY if the content actually lends itself to one (an acronym for a list, a numeric pattern) — empty string if forcing one would be gimmicky rather than useful"}';
 
       let prompt,tools=null;
       if(articleText){
         setSumStatus(usedScrape?"Analyzing fetched article…":"Analyzing pasted article…");
-        prompt="UPSC expert. Analyze for CSE. Output ONLY valid JSON under 250 words. No repetition between summary and keyPoints.\n\n"+
+        prompt="You are a senior UPSC Current Affairs editor known for precision and zero fluff. Every sentence you write must carry a specific, checkable fact — a name, number, date, place, or mechanism. NEVER write a sentence that could apply to any generic government announcement (banned phrases: 'this is a significant step', 'aims to boost development', 'plays a crucial role', 'marks a major milestone'). If the source material doesn't give you a specific figure for something, say so plainly rather than inventing one — precision beats confidence here.\n\n"+
+          "Output ONLY valid JSON, under 300 words total. No repetition between summary and keyPoints.\n\n"+
           "Source: "+(SOURCES[source]?.fullName||"")+" | Date: "+article.date+"\nTitle: "+article.title+"\n\nARTICLE:\n"+articleText+"\n\nOutput: "+schema;
       }else{
         setSumStatus("Auto-fetch unavailable — searching via Google…");
         tools=[{google_search:{}}];
-        prompt="UPSC expert. Search Google for: \""+article.title+"\" "+(SOURCES[source]?.fullName||"")+" "+article.date+"\n"+
-          "Read the FULL article from search results. Output ONLY valid JSON under 250 words. No repetition between summary and keyPoints.\n\n"+
+        prompt="You are a senior UPSC Current Affairs editor known for precision and zero fluff. Search Google for: \""+article.title+"\" "+(SOURCES[source]?.fullName||"")+" "+article.date+"\n"+
+          "Read the FULL article from search results. Every sentence you write must carry a specific, checkable fact — a name, number, date, place, or mechanism. NEVER write a sentence that could apply to any generic government announcement (banned phrases: 'this is a significant step', 'aims to boost development', 'plays a crucial role', 'marks a major milestone'). If you can't find a specific figure for something, say so plainly rather than inventing one.\n\n"+
+          "Output ONLY valid JSON, under 300 words total. No repetition between summary and keyPoints.\n\n"+
           "Output: "+schema;
       }
       const raw=await geminiCall(null,prompt,tools,()=>notify("🔄 Switched to backup key"));
       setSummary(extractJSONObj(raw));setSumStatus("");
+      // Kept around so genCarousel can ground the video/carousel script in
+      // the real article text too, instead of only the 5 compressed
+      // keyPoints — otherwise anything that didn't make the cut into
+      // those 5 points is permanently unrecoverable downstream.
+      setArticleFullText(articleText || "");
     }catch(e){notify("❌ "+e.message);setSumStatus("");}
     setLoadingSum(false);
   };
@@ -554,26 +562,29 @@ function App(){
     setLoadingCar(true);
     try{
       const srcName=SOURCES[source]?.name||"";
+      const hasFullText = articleFullText && articleFullText.length>150;
       const prompt=
-        "Create a 5-slide Instagram carousel for UPSC aspirants.\n\n"+
+        "Create a 4-slide Instagram carousel explaining this current-affairs story clearly for a general audience — anyone should understand it with zero prior context. NEVER use the words 'UPSC', 'GS Paper', 'Mains', 'exam', or any exam-prep framing anywhere in headings, bullets, or the caption — this should read like a sharp news-explainer account, not a coaching-class post.\n\n"+
         "Article: "+article.title+"\nSource: "+srcName+" | "+article.date+"\n"+
+        (hasFullText
+          ? "FULL ARTICLE TEXT (use this as your primary source — pull specific facts directly from it, not only from the summary below):\n"+articleFullText.slice(0,6000)+"\n\n"
+          : "")+
         "Summary: "+summary.summary+"\n"+
         "Key Points: "+(summary.keyPoints||[]).join(" | ")+"\n"+
-        "UPSC Angle: "+(summary.upscAngle||"")+"\n"+
+        "Why It Matters: "+(summary.whyItMatters||"")+"\n"+
         "Keywords: "+(summary.keywords||[]).join(", ")+"\n\n"+
-        "RULES: Every bullet = specific fact from THIS article. No generic statements. Each bullet under 12 words.\n\n"+
+        "RULES: Every bullet = a specific fact from THIS article (name/number/date) — no generic filler. Each bullet under 12 words. The Hook slide must create a genuine curiosity gap (a striking number, a surprising contrast, or a real question) — never a flat restatement like 'Here's what happened.'\n\n"+
         "Return JSON:\n"+
-        "slides: 5 objects — type: Hook|What Happened|Why It Matters|UPSC Angle|Exam Ready\n"+
+        "slides: 4 objects — type: Hook|What Happened|Why It Matters|Know the Terms\n"+
         "Each has: heading(8 words max), bullets(3 article-specific strings), emoji\n"+
         "Hook: also add subline(\""+srcName+" · "+article.date+"\")\n"+
-        "UPSC Angle: also add paper(GS paper name)\n"+
-        "Exam Ready: bullets = \"TERM: definition\" format\n"+
-        "caption: 200-250 char Instagram caption with emojis and 5 hashtags\n"+
+        "Know the Terms: bullets = \"TERM: definition\" format, plain-language definitions anyone would understand\n"+
+        "caption: 200-250 char Instagram caption, general-audience tone, with emojis, a light call-to-action to follow, and 5 hashtags — mix of topic-specific tags (drawn from this story) and general current-affairs tags, never defaulting to generic #UPSC-style tags\n"+
         "ytShortScript: 60-second script for YouTube Shorts, pure narration only, no labels/directions, max 160 words — for display/copying only.\n"+
         "ytScenes: array of 6 to 8 scene objects for a general-audience news explainer — written the way a professional TV newsreader delivers a clear, engaging segment. NOT a movie trailer, NOT an exam-prep lecture. Any Indian viewer should follow it easily with zero prior context, whether or not they've heard of this scheme/story before.\n"+
         "Each scene object has:\n"+
-        "  narration: ONE clear sentence (8-14 words), delivered the way a newsreader reads a headline — confident, active voice, no filler. Scene 1 should open with the single most important or striking fact from the story, the way a bulletin leads with its top line — not a dramatic \"hook,\" just good news-writing.\n"+
-        "  Together, the scenes MUST cover every point listed in keyPoints — do not skip or compress away any key fact for brevity. The substance should stay precise and exam-grade in accuracy, but NEVER mention \"UPSC,\" \"GS Paper,\" \"Mains,\" \"exam,\" or any exam-prep framing anywhere in the narration — nothing should sound like it's addressed only to aspirants.\n"+
+        "  narration: ONE clear sentence (8-14 words), delivered the way a newsreader reads a headline — confident, active voice, no filler. Every sentence must carry a specific, checkable fact from the article (a name, number, date, or mechanism) — NEVER a generic filler line that could apply to any story (banned: 'this is an important development', 'this affects many people', 'this shows the government's commitment'). If a scene has nothing specific to add, cut it rather than padding the count. Scene 1 should open with the single most important or striking fact from the story, the way a bulletin leads with its top line — not a dramatic \"hook,\" just good news-writing.\n"+
+        "  Together, the scenes MUST cover every point listed in keyPoints, each represented with its actual number/name/date intact — do not vague-ify a specific fact into a general statement for the sake of a shorter sentence."+(hasFullText?" Pull additional specific facts directly from the FULL ARTICLE TEXT above where they strengthen a scene, not only from the keyPoints list.":"")+" The substance should stay precise and exam-grade in accuracy, but NEVER mention \"UPSC,\" \"GS Paper,\" \"Mains,\" \"exam,\" or any exam-prep framing anywhere in the narration — nothing should sound like it's addressed only to aspirants.\n"+
         "  The final scene must close with a natural call-to-action to follow the channel for more daily news explainers — general audience, no mention of UPSC or exams in this line.\n"+
         "  visual: a SPECIFIC, CONCRETE, PHOTOGRAPHABLE description (4-8 words) of exactly what's on screen — real people, places, objects, or actions a stock-footage search engine could realistically match. NEVER use scheme names, acronyms, or abstract ideas as the visual (WRONG: \"Mission Mausam dashboard\" — RIGHT: \"meteorologist analyzing weather satellite data\"). Every visual must be unmistakably set in India — Indian people, places, institutions, uniforms, landscapes — never generic or Western-coded stock imagery. No two scenes may share the same visual.";
 
