@@ -580,16 +580,23 @@ function App(){
         "Hook: also add subline(\""+srcName+" · "+article.date+"\")\n"+
         "Know the Terms: bullets = \"TERM: definition\" format, plain-language definitions anyone would understand\n"+
         "caption: 200-250 char Instagram caption, general-audience tone, with emojis, a light call-to-action to follow, and 5 hashtags — mix of topic-specific tags (drawn from this story) and general current-affairs tags, never defaulting to generic #UPSC-style tags\n"+
-        "ytShortScript: 60-second script for YouTube Shorts, pure narration only, no labels/directions, max 160 words — for display/copying only.\n"+
         "ytScenes: array of 6 to 8 scene objects for a general-audience news explainer — written the way a professional TV newsreader delivers a clear, engaging segment. NOT a movie trailer, NOT an exam-prep lecture. Any Indian viewer should follow it easily with zero prior context, whether or not they've heard of this scheme/story before.\n"+
-        "Each scene object has:\n"+
+        "Each scene object has ONE field:\n"+
         "  narration: ONE clear sentence (8-14 words), delivered the way a newsreader reads a headline — confident, active voice, no filler. Every sentence must carry a specific, checkable fact from the article (a name, number, date, or mechanism) — NEVER a generic filler line that could apply to any story (banned: 'this is an important development', 'this affects many people', 'this shows the government's commitment'). If a scene has nothing specific to add, cut it rather than padding the count. Scene 1 should open with the single most important or striking fact from the story, the way a bulletin leads with its top line — not a dramatic \"hook,\" just good news-writing.\n"+
         "  Together, the scenes MUST cover every point listed in keyPoints, each represented with its actual number/name/date intact — do not vague-ify a specific fact into a general statement for the sake of a shorter sentence."+(hasFullText?" Pull additional specific facts directly from the FULL ARTICLE TEXT above where they strengthen a scene, not only from the keyPoints list.":"")+" The substance should stay precise and exam-grade in accuracy, but NEVER mention \"UPSC,\" \"GS Paper,\" \"Mains,\" \"exam,\" or any exam-prep framing anywhere in the narration — nothing should sound like it's addressed only to aspirants.\n"+
-        "  The final scene must close with a natural call-to-action to follow the channel for more daily news explainers — general audience, no mention of UPSC or exams in this line.\n"+
-        "  visual: a SPECIFIC, CONCRETE, PHOTOGRAPHABLE description (4-8 words) of exactly what's on screen — real people, places, objects, or actions a stock-footage search engine could realistically match. NEVER use scheme names, acronyms, or abstract ideas as the visual (WRONG: \"Mission Mausam dashboard\" — RIGHT: \"meteorologist analyzing weather satellite data\"). Every visual must be unmistakably set in India — Indian people, places, institutions, uniforms, landscapes — never generic or Western-coded stock imagery. No two scenes may share the same visual.";
+        "  The final scene must close with a natural call-to-action to follow the channel for more daily news explainers — general audience, no mention of UPSC or exams in this line.";
 
       const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"));
-      setCarousel(extractJSONObj(raw));setShowCar(true);
+      const parsed=extractJSONObj(raw);
+      // ytShortScript is derived here, not asked of Gemini separately —
+      // the two used to be independently generated and could quietly say
+      // different things (what you read vs. what actually got narrated in
+      // the rendered video). Deriving it from ytScenes guarantees they can
+      // never drift apart again.
+      if(parsed.ytScenes&&parsed.ytScenes.length){
+        parsed.ytShortScript=parsed.ytScenes.map(s=>s.narration).join(" ");
+      }
+      setCarousel(parsed);setShowCar(true);
     }catch(e){notify("❌ "+e.message);}
     setLoadingCar(false);
   };
