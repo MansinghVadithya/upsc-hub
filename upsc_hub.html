@@ -270,7 +270,20 @@ const C={
 
 // ── App ───────────────────────────────────────────────────────────────
 function App(){
-  const [view,setView]=useState("home");
+  const [view,setView]=useState("splash");
+  const [splashStage,setSplashStage]=useState(0);
+  const [username,setUsername]=useState(ls("upsc_username")||"");
+  const [avatarImg,setAvatarImg]=useState(ls("upsc_avatar_img")||"");
+
+  // Onboarding splash (sketch screens 1+2, bundled as one flow): app name
+  // card, then a welcome card, then lands on Home — each auto-advancing
+  // after a short beat, no user interaction needed.
+  useEffect(()=>{
+    if(view!=="splash")return;
+    const t1=setTimeout(()=>setSplashStage(1),1100);
+    const t2=setTimeout(()=>setView("home"),2200);
+    return ()=>{clearTimeout(t1);clearTimeout(t2);};
+  },[view]);
   const [source,setSrc]=useState(null);
   const [articles,setArts]=useState([]);
   const [feedMode,setFeedMode]=useState("");
@@ -883,13 +896,60 @@ function App(){
   };
 
   // ── HOME ─────────────────────────────────────────────────────────────
+  // ── Profile (name + optional avatar photo) ───────────────────────────
+  const handleAvatarFile = e => {
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = () => {
+        const size = 200;
+        const canvas = document.createElement("canvas");
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        const scale = Math.max(size/img.width, size/img.height);
+        const w = img.width*scale, h = img.height*scale;
+        ctx.drawImage(img, (size-w)/2, (size-h)/2, w, h);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        ls("upsc_avatar_img", dataUrl);
+        setAvatarImg(dataUrl);
+        notify("✅ Photo updated!");
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  const removeAvatar = () => { ls("upsc_avatar_img",""); setAvatarImg(""); notify("🗑️ Photo removed"); };
+  const saveUsername = () => { ls("upsc_username", username.trim()); notify("✅ Saved!"); };
+
+  // ── SPLASH (sketch screens 1+2, bundled) ────────────────────────────
+  if(view==="splash")return(
+    <div style={{background:"#08080F",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}>
+      {splashStage===0
+        ?<div key="s0" className="fade" style={{textAlign:"center"}}>
+          <div style={{fontSize:44,marginBottom:14}}>🏛️</div>
+          <h1 style={{fontSize:24,fontWeight:800,background:"linear-gradient(130deg,#E2E2EE 40%,#A78BFA)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>UPSC Current Affairs Hub</h1>
+        </div>
+        :<div key="s1" className="fade" style={{textAlign:"center"}}>
+          <h1 style={{fontSize:22,fontWeight:700,color:"#E2E2EE"}}>{username?`Welcome, ${username}!`:"Welcome!"}</h1>
+        </div>}
+    </div>
+  );
+
+  // ── HOME ──────────────────────────────────────────────────────────────
   if(view==="home")return(
     <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
       <div style={C.wrap} className="fade">
-        <div style={{marginBottom:24,paddingTop:8}}>
-          <div style={{fontSize:10,letterSpacing:3,color:"#818CF8",fontWeight:700,marginBottom:8,textTransform:"uppercase"}}>UPSC CSE 2026</div>
-          <h1 style={{fontSize:26,fontWeight:800,background:"linear-gradient(130deg,#E2E2EE 40%,#A78BFA)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:4}}>Current Affairs Hub</h1>
-          <p style={{opacity:0.35,fontSize:13}}>Live feeds · AI analysis · Instagram carousel · Drive sync</p>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:24,paddingTop:8}}>
+          <div>
+            <div style={{fontSize:10,letterSpacing:3,color:"#818CF8",fontWeight:700,marginBottom:8,textTransform:"uppercase"}}>UPSC CSE 2026</div>
+            <h1 style={{fontSize:26,fontWeight:800,background:"linear-gradient(130deg,#E2E2EE 40%,#A78BFA)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:4}}>Current Affairs Hub</h1>
+            <p style={{opacity:0.35,fontSize:13}}>Live feeds · AI analysis · Instagram carousel · Drive sync</p>
+          </div>
+          <button onClick={()=>setView("profile")} style={{width:44,height:44,borderRadius:"50%",border:"1px solid rgba(255,255,255,0.12)",background:avatarImg?`url(${avatarImg})`:"linear-gradient(135deg,#6366F1,#8B5CF6)",backgroundSize:"cover",backgroundPosition:"center",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:16}}>
+            {!avatarImg&&(username?username.trim()[0].toUpperCase():"👤")}
+          </button>
         </div>
         {!apiKey&&<div style={{background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.25)",borderRadius:10,padding:"11px 14px",marginBottom:14,fontSize:12,color:"#F87171"}}>
           ⚠️ No API key — go to ⚙️ Settings to add your Gemini API key.
@@ -935,6 +995,30 @@ function App(){
   );
 
   // ── SETTINGS ─────────────────────────────────────────────────────────
+  // ── PROFILE (identity only, per your call — name + optional photo) ──
+  if(view==="profile")return(
+    <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+      <div style={C.topBar}><button style={C.ghost} onClick={()=>setView("home")}>← Home</button><span style={{fontWeight:700}}>👤 Profile</span></div>
+      <div style={C.wrap} className="fade">
+        <div style={{...C.card,padding:24,marginBottom:16,textAlign:"center"}}>
+          <div style={{width:96,height:96,borderRadius:"50%",margin:"0 auto 16px",background:avatarImg?`url(${avatarImg})`:"linear-gradient(135deg,#6366F1,#8B5CF6)",backgroundSize:"cover",backgroundPosition:"center",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:34}}>
+            {!avatarImg&&(username?username.trim()[0].toUpperCase():"👤")}
+          </div>
+          <div style={{display:"flex",gap:8,justifyContent:"center",marginBottom:20}}>
+            <label style={{...C.ghost,fontSize:12,cursor:"pointer"}}>
+              📷 {avatarImg?"Change Photo":"Add Photo"}
+              <input type="file" accept="image/*" onChange={handleAvatarFile} style={{display:"none"}}/>
+            </label>
+            {avatarImg&&<button onClick={removeAvatar} style={{background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.2)",color:"#F87171",padding:"8px 15px",borderRadius:9,fontSize:12}}>Remove</button>}
+          </div>
+          <div style={{fontSize:10,opacity:0.4,marginBottom:4,textTransform:"uppercase",letterSpacing:1,textAlign:"left"}}>Name</div>
+          <input value={username} onChange={e=>setUsername(e.target.value)} placeholder="Your name" style={{marginBottom:14,textAlign:"center"}}/>
+          <button onClick={saveUsername} style={{...C.btn("linear-gradient(135deg,#6366F1,#8B5CF6)"),width:"100%"}}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+
   if(view==="settings")return(
     <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
       <div style={C.topBar}><button style={C.ghost} onClick={()=>setView("home")}>← Home</button><span style={{fontWeight:700}}>⚙️ Settings</span></div>
