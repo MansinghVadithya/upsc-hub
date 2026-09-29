@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stackblur-canvas/2.7.0/stackblur.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script type="module">
   import { FFmpeg } from "https://esm.sh/@ffmpeg/ffmpeg@0.12.15";
   import { toBlobURL } from "https://esm.sh/@ffmpeg/util@0.12.2";
@@ -45,7 +46,8 @@ const SOURCES = {
   rbi:   {id:"rbi",   name:"RBI",   fullName:"Reserve Bank of India",               color:"#4F9EFF",icon:"🏦"},
   sebi:  {id:"sebi",  name:"SEBI",  fullName:"Securities & Exchange Board of India", color:"#2DD4BF",icon:"📈"},
   gnews: {id:"gnews", name:"Google News",fullName:"Google News — India",            color:"#EA4335",icon:"📰"},
-  manual:{id:"manual",name:"Manual",     fullName:"Manually Added Article",         color:"#F472B6",icon:"📝"}
+  manual:{id:"manual",name:"Manual",     fullName:"Manually Added Article",         color:"#F472B6",icon:"📝"},
+  kb:    {id:"kb",    name:"Knowledge Base",fullName:"Knowledge Base Article",       color:"#22D3EE",icon:"📚"}
 };
 
 const SLIDE_BG = {
@@ -119,6 +121,54 @@ const fetchPexelsBg = async (articleTitle, categoryKw, key) => {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 const ls  = (k,v) => {try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v);}catch{}};
+
+// ── Knowledge Base storage (IndexedDB — PDFs are far too large for
+// localStorage's ~5-10MB cap). One object store, one record per uploaded
+// PDF: {id, name, uploadedAt, pageCount, toc, pdfBase64}. toc holds the
+// extracted {title,startPage,endPage} list; pdfBase64 is the raw file,
+// kept so any article's page range can be sliced out again later, even
+// long after upload.
+const KB_DB="upsc_kb", KB_STORE="files";
+const kbDB=()=>new Promise((res,rej)=>{
+  const req=indexedDB.open(KB_DB,1);
+  req.onupgradeneeded=()=>{req.result.createObjectStore(KB_STORE,{keyPath:"id"});};
+  req.onsuccess=()=>res(req.result);
+  req.onerror=()=>rej(req.error);
+});
+const kbPut=async rec=>{const db=await kbDB();return new Promise((res,rej)=>{
+  const tx=db.transaction(KB_STORE,"readwrite");
+  tx.objectStore(KB_STORE).put(rec);
+  tx.oncomplete=()=>res(rec);tx.onerror=()=>rej(tx.error);
+});};
+const kbGet=async id=>{const db=await kbDB();return new Promise((res,rej)=>{
+  const req=db.transaction(KB_STORE,"readonly").objectStore(KB_STORE).get(id);
+  req.onsuccess=()=>res(req.result||null);req.onerror=()=>rej(req.error);
+});};
+const kbList=async()=>{const db=await kbDB();return new Promise((res,rej)=>{
+  const req=db.transaction(KB_STORE,"readonly").objectStore(KB_STORE).getAll();
+  req.onsuccess=()=>res((req.result||[]).sort((a,b)=>b.uploadedAt-a.uploadedAt));req.onerror=()=>rej(req.error);
+});};
+const kbDelete=async id=>{const db=await kbDB();return new Promise((res,rej)=>{
+  const tx=db.transaction(KB_STORE,"readwrite");
+  tx.objectStore(KB_STORE).delete(id);
+  tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);
+});};
+// pdf-lib slices out just the requested page range (1-indexed, inclusive)
+// into a small new PDF, so a Gemini call only ever needs to read the
+// handful of pages an article actually spans — never the whole document.
+const kbSlicePages=async(pdfBase64,startPage,endPage)=>{
+  const { PDFDocument } = PDFLib;
+  const src=await PDFDocument.load(Uint8Array.from(atob(pdfBase64),c=>c.charCodeAt(0)));
+  const total=src.getPageCount();
+  const from=Math.max(0,startPage-1), to=Math.min(total-1,endPage-1);
+  const indices=[];for(let i=from;i<=to;i++)indices.push(i);
+  const out=await PDFDocument.create();
+  const pages=await out.copyPages(src,indices);
+  pages.forEach(p=>out.addPage(p));
+  const bytes=await out.save();
+  let bin="";bytes.forEach(b=>bin+=String.fromCharCode(b));
+  return btoa(bin);
+};
 const lsJ = (k,v) => {try{if(v===undefined){const r=localStorage.getItem(k);return r?JSON.parse(r):null;}localStorage.setItem(k,JSON.stringify(v));}catch{return null;}};
 
 // ── Multi-key rotation ──────────────────────────────────────────────
@@ -187,10 +237,12 @@ const setBMs=bms=>lsJ(BM_KEY,bms);
 
 // ── Gemini API ───────────────────────────────────────────────────────
 // ── Gemini API — tries each key in rotation, skipping any on cooldown ──
-const geminiCallSingle=async(apiKey,prompt,tools=null,maxTokens=1200)=>{
+const geminiCallSingle=async(apiKey,prompt,tools=null,maxTokens=1200,pdfBase64=null)=>{
   const modelToUse = tools ? SEARCH_MODEL : GEMINI_MODEL;
+  const parts=[{text:prompt}];
+  if(pdfBase64) parts.push({inlineData:{mimeType:"application/pdf",data:pdfBase64}});
   const body={
-    contents:[{parts:[{text:prompt}]}],
+    contents:[{parts}],
     generationConfig:{temperature:0.2,maxOutputTokens:maxTokens,thinkingConfig:{thinkingBudget:0}}
   };
   if(!tools) body.generationConfig.responseMimeType="application/json";
@@ -210,7 +262,7 @@ const geminiCallSingle=async(apiKey,prompt,tools=null,maxTokens=1200)=>{
   return text;
 };
 
-const geminiCall=async(apiKeyIgnored,prompt,tools=null,onRotate=null,maxTokens=1200)=>{
+const geminiCall=async(apiKeyIgnored,prompt,tools=null,onRotate=null,maxTokens=1200,pdfBase64=null)=>{
   const keys = getApiKeys();
   if(keys.length===0) throw new Error("No API key — check Settings.");
   const usable = keys.filter(k=>!isOnCooldown(k));
@@ -218,7 +270,7 @@ const geminiCall=async(apiKeyIgnored,prompt,tools=null,onRotate=null,maxTokens=1
   let lastErr=null;
   for(let i=0;i<tryOrder.length;i++){
     const key=tryOrder[i];
-    try{ return await geminiCallSingle(key,prompt,tools,maxTokens); }
+    try{ return await geminiCallSingle(key,prompt,tools,maxTokens,pdfBase64); }
     catch(e){
       lastErr=e;
       if(e && e.rateLimited){
@@ -297,6 +349,11 @@ function App(){
   const [article,setArticle]=useState(null);
   const [pasteText,setPasteText]=useState("");
   const [articleFullText,setArticleFullText]=useState("");
+  const [kbFiles,setKbFiles]=useState([]);
+  const [kbLoading,setKbLoading]=useState(false);
+  const [kbUploading,setKbUploading]=useState(false);
+  const [kbUploadStatus,setKbUploadStatus]=useState("");
+  const [kbCurrentFile,setKbCurrentFile]=useState(null);
   const [showManual,setShowManual]=useState(false);
   const [queueItems,setQueueItems]=useState([]);
   const [loadingQueueList,setLoadingQueueList]=useState(false);
@@ -565,6 +622,44 @@ function App(){
       // keyPoints — otherwise anything that didn't make the cut into
       // those 5 points is permanently unrecoverable downstream.
       setArticleFullText(articleText || "");
+    }catch(e){notify("❌ "+e.message);setSumStatus("");}
+    setLoadingSum(false);
+  };
+
+  // ── Knowledge Base pipeline (separate from genSummary above) ─────────
+  // PDF feature articles (e.g. a 15-page PIB compendium piece) are a
+  // different kind of source from a short press release — forcing them
+  // through the same fixed "300 words, 5 points" template would throw
+  // away most of what makes a deep-dive worth reading. This prompt has no
+  // hardcoded length or point-count at all: it's told explicitly to let
+  // the source material's own depth decide, so a short piece stays short
+  // and a substantial feature gets the fuller analysis it actually earns.
+  const genKbSummary=async()=>{
+    const keys=getApiKeys();if(keys.length===0){notify("Add API key in Settings");return;}
+    setLoadingSum(true);setSumStatus("");
+    try{
+      setSumStatus(`Reading pages ${article.kbStartPage}–${article.kbEndPage}…`);
+      const rec=await kbGet(article.kbFileId);
+      if(!rec) throw new Error("Source PDF no longer found in this browser's storage");
+      const pdfBase64=await kbSlicePages(rec.pdfBase64,article.kbStartPage,article.kbEndPage);
+
+      setSumStatus("Analyzing…");
+      const schema=
+        '{"summary":"as many sentences as the source genuinely needs to convey its substance — no target length, just zero padding and zero omission of real content",' +
+        '"keyPoints":["as many distinct, non-overlapping facts as the source material actually supports — a short piece may only yield 3-4 real ones, a substantial feature may yield 12+; never pad to hit a number, never compress two distinct facts into one to stay under one"],' +
+        '"whyItMatters":"the real downstream consequence(s) this causes — one sentence if that is genuinely all there is to say, several if the source supports more",' +
+        '"upscAngle":"Exact GS Paper + specific topic area + likely question type (factual/analytical/opinion)",' +
+        '"possibleQuestion":"One realistic Mains-style analytical question a real UPSC paper could plausibly ask about this — not a Prelims fact-recall stem",' +
+        '"gsTags":["1-2 precise GS paper tags, e.g. GS2—Governance"],' +
+        '"keywords":["5 precise, topic-specific search keywords — never generic terms like india or government alone"],' +
+        '"mnemonic":"a genuinely memorable trick ONLY if the content actually lends itself to one — empty string if forcing one would be gimmicky rather than useful"}';
+
+      const prompt="You are a senior UPSC Current Affairs editor known for precision and zero fluff. Read the attached PDF pages directly — they contain one article titled \""+article.title+"\" from a government press-release compendium. This may be a short item or a substantial multi-page feature; let the article's OWN depth decide how much you write, not any external target. Every sentence must carry a specific, checkable fact — a name, number, date, place, or mechanism. NEVER write a sentence that could apply to any generic government announcement (banned phrases: 'this is a significant step', 'aims to boost development', 'plays a crucial role', 'marks a major milestone'). Do not pad a short article to sound substantial, and do not compress a long, detailed feature down to an artificial length — cover what is genuinely there, completely, at whatever length that honestly takes. If the source doesn't give a specific figure for something, say so plainly rather than inventing one.\n\n"+
+        "Output ONLY valid JSON, no length cap. No repetition between summary and keyPoints.\n\nOutput: "+schema;
+
+      const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"),3000,pdfBase64);
+      setSummary(extractJSONObj(raw));setSumStatus("");
+      setArticleFullText(""); // no separate plain-text extraction in this pipeline — genCarousel falls back to keyPoints/summary grounding for KB articles, same as it already does for grounded-search-sourced ones
     }catch(e){notify("❌ "+e.message);setSumStatus("");}
     setLoadingSum(false);
   };
@@ -896,6 +991,76 @@ function App(){
   };
 
   // ── HOME ─────────────────────────────────────────────────────────────
+  // ── Knowledge Base ────────────────────────────────────────────────────
+  const fetchKbFiles = async () => {
+    setKbLoading(true);
+    try{ setKbFiles(await kbList()); }catch(e){ console.warn("KB list:",e.message); }
+    setKbLoading(false);
+  };
+  useEffect(()=>{ if(view==="kb") fetchKbFiles(); },[view]);
+
+  const fileToBase64 = file => new Promise((res,rej)=>{
+    const reader=new FileReader();
+    reader.onload=()=>res(reader.result.split(",")[1]);
+    reader.onerror=rej;
+    reader.readAsDataURL(file);
+  });
+
+  const kbHandleUpload = async e => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value=""; // lets the same file be re-picked later if needed
+    if(!file) return;
+    if(file.type!=="application/pdf"){notify("❌ Please choose a PDF file");return;}
+    const keys=getApiKeys();if(keys.length===0){notify("Add API key in Settings first");return;}
+    setKbUploading(true);setKbUploadStatus("Reading file…");
+    try{
+      const pdfBase64 = await fileToBase64(file);
+      const id = `kb_${Date.now()}`;
+      const rec = { id, name:file.name.replace(/\.pdf$/i,""), uploadedAt:Date.now(), toc:[], pdfBase64 };
+      await kbPut(rec);
+      setKbFiles(prev=>[rec,...prev]); // shows up immediately, even before ToC extraction finishes
+
+      setKbUploadStatus("Finding table of contents…");
+      const prompt="This is a government press-release compendium PDF. Find its Table of Contents (usually near the start) and list every article entry in it, with the exact page range each one spans in the actual document. If an entry's end page isn't explicit, use the page right before the next entry's start page. Output ONLY valid JSON, no other text:\n"+
+        '{"articles":[{"title":"exact title as printed","startPage":number,"endPage":number}]}';
+      const raw = await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"),4000,pdfBase64);
+      const parsed = extractJSONObj(raw);
+      const toc = (parsed.articles||[]).filter(a=>a.title && a.startPage);
+      if(!toc.length) throw new Error("Couldn't find a Table of Contents in this PDF");
+
+      rec.toc = toc;
+      await kbPut(rec);
+      setKbFiles(prev=>prev.map(f=>f.id===id?rec:f));
+      notify(`✅ Found ${toc.length} articles`);
+    }catch(e){
+      notify("❌ "+e.message);
+    }
+    setKbUploading(false);setKbUploadStatus("");
+  };
+
+  const kbDeleteFile = async id => {
+    setKbFiles(prev=>prev.filter(f=>f.id!==id)); // optimistic
+    try{ await kbDelete(id); notify("🗑️ Deleted"); }
+    catch(e){ notify("❌ "+e.message); fetchKbFiles(); }
+  };
+
+  const kbOpenFile = file => { setKbCurrentFile(file); setView("kb-file"); };
+
+  const kbOpenArticle = (file,art,idx) => {
+    setSrc("kb");
+    openArticle({
+      id:`${file.id}_${idx}`,
+      title:art.title,
+      description:"",
+      link:"",
+      date:file.name,
+      timestamp:file.uploadedAt,
+      kbFileId:file.id,
+      kbStartPage:art.startPage,
+      kbEndPage:art.endPage
+    });
+  };
+
   // ── Profile (name + optional avatar photo) ───────────────────────────
   const handleAvatarFile = e => {
     const file = e.target.files && e.target.files[0];
@@ -959,6 +1124,7 @@ function App(){
           <button onClick={()=>setView("settings")} style={C.ghost}>⚙️ Settings</button>
         </div>
         <button onClick={()=>setView("queue")} style={{...C.ghost,width:"100%",marginBottom:12}}>🎬 Video Queue</button>
+        <button onClick={()=>setView("kb")} style={{...C.ghost,width:"100%",marginBottom:12}}>📚 Knowledge Base</button>
         <button onClick={()=>setShowManual(v=>!v)} style={{...C.ghost,width:"100%",marginBottom:showManual?10:20}}>📝 Paste Article / URL</button>
         {showManual&&<div style={{...C.card,padding:14,marginBottom:20}} className="fade">
           <input value={manualTitle} onChange={e=>setManualTitle(e.target.value)} placeholder="Title (optional)" style={{marginBottom:8}}/>
@@ -1261,7 +1427,7 @@ function App(){
     return(
       <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
         <div style={C.topBar}>
-          <button style={C.ghost} onClick={()=>setView(source==="manual"?"home":"source")}>← {source==="manual"?"Home":src.name}</button>
+          <button style={C.ghost} onClick={()=>setView(source==="manual"?"home":source==="kb"?"kb-file":"source")}>← {source==="manual"?"Home":source==="kb"?"Articles":src.name}</button>
           <div style={{flex:1,minWidth:0}}><div style={{fontSize:10,opacity:0.3}}>{src.name} · {article.date}</div></div>
           <button onClick={toggleBM} style={{...C.ghost,color:bm?"#FFC107":"#E2E2EE",background:bm?"rgba(255,193,7,0.1)":"rgba(255,255,255,0.06)"}}>{bm?"🔖 Saved":"🔖 Save"}</button>
         </div>
@@ -1288,7 +1454,7 @@ function App(){
 
           {/* Action buttons */}
           <div style={{display:"grid",gap:10,marginBottom:18}}>
-            <button onClick={genSummary} disabled={loadingSum} style={C.btn(loadingSum?"rgba(255,255,255,0.05)":"linear-gradient(135deg,#6366F1,#8B5CF6)")}>
+            <button onClick={article.kbFileId?genKbSummary:genSummary} disabled={loadingSum} style={C.btn(loadingSum?"rgba(255,255,255,0.05)":"linear-gradient(135deg,#6366F1,#8B5CF6)")}>
               {loadingSum?`⏳ ${sumStatus||"Generating…"}`:"🤖 Generate AI Summary & UPSC Analysis"}
             </button>
             {summary&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -1324,6 +1490,71 @@ function App(){
         {/* Offscreen 9:16 caption frame, captured by html2canvas during video generation */}
         <div id="video-frame-render" style={{position:"fixed",left:-9999,top:0,width:540,height:960,background:"#0c0c16",display:"flex",alignItems:"center",justifyContent:"center",padding:40}}>
           <p style={{color:"#fff",fontSize:34,fontWeight:700,lineHeight:1.4,textAlign:"center",fontFamily:"'Segoe UI',system-ui,sans-serif"}}></p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── KNOWLEDGE BASE — file list ────────────────────────────────────────
+  if(view==="kb"){
+    const ago=ts=>{
+      const days=Math.round((Date.now()-ts)/86400000);
+      if(days<1)return"today";
+      if(days===1)return"yesterday";
+      return`${days}d ago`;
+    };
+    return(
+      <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+        <div style={C.topBar}>
+          <button style={C.ghost} onClick={()=>setView("home")}>← Home</button>
+          <div style={{flex:1}}><span style={{fontWeight:700}}>📚 Knowledge Base</span></div>
+        </div>
+        <div style={C.wrap} className="fade">
+          <label style={{...C.btn(kbUploading?"rgba(255,255,255,0.05)":"linear-gradient(135deg,#22D3EE,#6366F1)"),width:"100%",display:"block",textAlign:"center",marginBottom:20,cursor:kbUploading?"default":"pointer",opacity:kbUploading?0.7:1}}>
+            {kbUploading?`⏳ ${kbUploadStatus||"Uploading…"}`:"⬆️ Upload PDF"}
+            <input type="file" accept="application/pdf" onChange={kbHandleUpload} disabled={kbUploading} style={{display:"none"}}/>
+          </label>
+          <p style={{fontSize:11,opacity:0.35,marginBottom:20}}>Upload a compendium once — its Table of Contents is found automatically, and each article's full text is only read when you actually open it.</p>
+          {kbLoading&&kbFiles.length===0?<div style={{textAlign:"center",padding:"60px 0",opacity:0.4}}>Loading…</div>:
+          kbFiles.length===0?<div style={{textAlign:"center",padding:"80px 0",opacity:0.3}}><div style={{fontSize:40,marginBottom:10}}>📚</div><p>No PDFs uploaded yet.</p></div>:
+          <div style={{display:"grid",gap:10}}>
+            {kbFiles.map(f=>(
+              <div key={f.id} onClick={()=>f.toc?.length&&kbOpenFile(f)} style={{...C.card,padding:"14px 16px",cursor:f.toc?.length?"pointer":"default",opacity:f.toc?.length?1:0.5}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>{f.name}</div>
+                    <div style={{fontSize:11,opacity:0.4}}>{f.toc?.length?`${f.toc.length} articles · uploaded ${ago(f.uploadedAt)}`:"Extracting table of contents…"}</div>
+                  </div>
+                  <button onClick={ev=>{ev.stopPropagation();kbDeleteFile(f.id);}} style={{background:"rgba(248,113,113,0.08)",border:"1px solid rgba(248,113,113,0.2)",color:"#F87171",padding:"5px 10px",borderRadius:7,fontSize:11,flexShrink:0}}>Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>}
+        </div>
+      </div>
+    );
+  }
+
+  // ── KNOWLEDGE BASE — article list within one file ───────────────────
+  if(view==="kb-file"&&kbCurrentFile){
+    return(
+      <div style={{background:"#08080F",minHeight:"100vh"}}>{Toast}
+        <div style={C.topBar}>
+          <button style={C.ghost} onClick={()=>setView("kb")}>← Files</button>
+          <div style={{flex:1}}><span style={{fontWeight:700}}>{kbCurrentFile.name}</span></div>
+        </div>
+        <div style={C.wrap} className="fade">
+          <div style={{display:"grid",gap:10}}>
+            {(kbCurrentFile.toc||[]).map((art,i)=>(
+              <div key={i} onClick={()=>kbOpenArticle(kbCurrentFile,art,i)} style={{...C.card,padding:"14px 16px",cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
+                <div style={{width:26,height:26,borderRadius:8,background:"rgba(34,211,238,0.12)",color:"#22D3EE",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,flexShrink:0}}>{i+1}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:600,fontSize:13,lineHeight:1.4}}>{art.title}</div>
+                  <div style={{fontSize:11,opacity:0.35,marginTop:2}}>Pages {art.startPage}–{art.endPage}</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
