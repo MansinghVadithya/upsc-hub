@@ -156,9 +156,24 @@ const kbDelete=async id=>{const db=await kbDB();return new Promise((res,rej)=>{
 // pdf-lib slices out just the requested page range (1-indexed, inclusive)
 // into a small new PDF, so a Gemini call only ever needs to read the
 // handful of pages an article actually spans — never the whole document.
-const kbSlicePages=async(pdfBase64,startPage,endPage)=>{
+// A large PDF (hundreds of MB) is expensive to parse — pdf-lib has to read
+// the whole document's structure into memory regardless of how few pages
+// you actually want. This cache means that cost is paid once per file per
+// session, not once per slice (ToC extraction, then every article opened).
+const kbDocCache = {};
+const kbLoadDoc = async(pdfBase64,fileId=null)=>{
   const { PDFDocument } = PDFLib;
-  const src=await PDFDocument.load(Uint8Array.from(atob(pdfBase64),c=>c.charCodeAt(0)));
+  let doc = fileId && kbDocCache[fileId];
+  if(!doc){
+    doc = await PDFDocument.load(Uint8Array.from(atob(pdfBase64),c=>c.charCodeAt(0)));
+    if(fileId) kbDocCache[fileId] = doc;
+  }
+  return doc;
+};
+const kbPageCount = async(pdfBase64,fileId=null)=>(await kbLoadDoc(pdfBase64,fileId)).getPageCount();
+const kbSlicePages=async(pdfBase64,startPage,endPage,fileId=null)=>{
+  const { PDFDocument } = PDFLib;
+  const src = await kbLoadDoc(pdfBase64,fileId);
   const total=src.getPageCount();
   const from=Math.max(0,startPage-1), to=Math.min(total-1,endPage-1);
   const indices=[];for(let i=from;i<=to;i++)indices.push(i);
@@ -641,7 +656,19 @@ function App(){
       setSumStatus(`Reading pages ${article.kbStartPage}–${article.kbEndPage}…`);
       const rec=await kbGet(article.kbFileId);
       if(!rec) throw new Error("Source PDF no longer found in this browser's storage");
-      const pdfBase64=await kbSlicePages(rec.pdfBase64,article.kbStartPage,article.kbEndPage);
+
+      // Convert this article's PRINTED page numbers into actual physical
+      // PDF page positions using this file's own calibrated scale (see
+      // kbHandleUpload), then pad generously on both sides — the padding
+      // absorbs any imprecision in that conversion, and the prompt below
+      // tells Gemini to isolate the right article by title regardless of
+      // whether a neighboring article's content also ends up in the slice.
+      const scale = rec.pageScale || 1;
+      const PAD = 5;
+      const totalPhysicalPages = await kbPageCount(rec.pdfBase64,article.kbFileId);
+      const physStart = Math.max(1, Math.round(article.kbStartPage*scale) - PAD);
+      const physEnd = Math.min(totalPhysicalPages, Math.round(article.kbEndPage*scale) + PAD);
+      const pdfBase64=await kbSlicePages(rec.pdfBase64,physStart,physEnd,article.kbFileId);
 
       setSumStatus("Analyzing…");
       const schema=
@@ -654,7 +681,7 @@ function App(){
         '"keywords":["5 precise, topic-specific search keywords — never generic terms like india or government alone"],' +
         '"mnemonic":"a genuinely memorable trick ONLY if the content actually lends itself to one — empty string if forcing one would be gimmicky rather than useful"}';
 
-      const prompt="You are a senior UPSC Current Affairs editor known for precision and zero fluff. Read the attached PDF pages directly — they contain one article titled \""+article.title+"\" from a government press-release compendium. This may be a short item or a substantial multi-page feature; let the article's OWN depth decide how much you write, not any external target. Every sentence must carry a specific, checkable fact — a name, number, date, place, or mechanism. NEVER write a sentence that could apply to any generic government announcement (banned phrases: 'this is a significant step', 'aims to boost development', 'plays a crucial role', 'marks a major milestone'). Do not pad a short article to sound substantial, and do not compress a long, detailed feature down to an artificial length — cover what is genuinely there, completely, at whatever length that honestly takes. If the source doesn't give a specific figure for something, say so plainly rather than inventing one.\n\n"+
+      const prompt="You are a senior UPSC Current Affairs editor known for precision and zero fluff. The attached PDF pages are an EXCERPT from a larger government press-release compendium — they may include the tail end of a PRECEDING article and/or the start of a FOLLOWING article in addition to the one you actually want. Find and analyze ONLY the article titled exactly \""+article.title+"\" (look for its title or section-divider page within these pages) — completely ignore any other article's content that also appears in this excerpt. This may be a short item or a substantial multi-page feature; let that ONE article's own depth decide how much you write, not any external target. Every sentence must carry a specific, checkable fact — a name, number, date, place, or mechanism. NEVER write a sentence that could apply to any generic government announcement (banned phrases: 'this is a significant step', 'aims to boost development', 'plays a crucial role', 'marks a major milestone'). Do not pad a short article to sound substantial, and do not compress a long, detailed feature down to an artificial length — cover what is genuinely there, completely, at whatever length that honestly takes. If the source doesn't give a specific figure for something, say so plainly rather than inventing one.\n\n"+
         "Output ONLY valid JSON, no length cap. No repetition between summary and keyPoints.\n\nOutput: "+schema;
 
       const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"),3000,pdfBase64);
@@ -1021,14 +1048,34 @@ function App(){
       setKbFiles(prev=>[rec,...prev]); // shows up immediately, even before ToC extraction finishes
 
       setKbUploadStatus("Finding table of contents…");
+      // Only the first ~10 pages (where a ToC almost always lives) ever
+      // get sent to Gemini — never the whole file. Gemini's PDF handling
+      // caps at 50MB per document regardless of upload method, so a large
+      // compendium has to be pre-sliced locally before it ever reaches
+      // the API, for this step and for every per-article open later.
+      const tocSliceBase64 = await kbSlicePages(pdfBase64,1,10,id);
       const prompt="This is a government press-release compendium PDF. Find its Table of Contents (usually near the start) and list every article entry in it, with the exact page range each one spans in the actual document. If an entry's end page isn't explicit, use the page right before the next entry's start page. Output ONLY valid JSON, no other text:\n"+
         '{"articles":[{"title":"exact title as printed","startPage":number,"endPage":number}]}';
-      const raw = await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"),4000,pdfBase64);
+      const raw = await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"),4000,tocSliceBase64);
       const parsed = extractJSONObj(raw);
       const toc = (parsed.articles||[]).filter(a=>a.title && a.startPage);
-      if(!toc.length) throw new Error("Couldn't find a Table of Contents in this PDF");
+      if(!toc.length) throw new Error("Couldn't find a Table of Contents in the first 10 pages of this PDF");
+
+      // Self-calibrating fix for a real issue: this compendium's print
+      // layout numbers pages sequentially (1,2,3...), but some exports lay
+      // two of those printed pages side-by-side on one actual PDF page (a
+      // spread) — so "printed page 9" and "physical PDF page 9" can be
+      // completely different locations. Comparing the file's real page
+      // count against the highest printed page number in the ToC gives
+      // this specific file's actual scale, whatever it turns out to be,
+      // rather than assuming a fixed ratio that might not hold for every
+      // document uploaded.
+      const totalPhysicalPages = await kbPageCount(pdfBase64,id);
+      const maxPrinted = Math.max(...toc.map(a=>a.endPage));
+      const pageScale = maxPrinted>0 ? (totalPhysicalPages/maxPrinted) : 1;
 
       rec.toc = toc;
+      rec.pageScale = pageScale;
       await kbPut(rec);
       setKbFiles(prev=>prev.map(f=>f.id===id?rec:f));
       notify(`✅ Found ${toc.length} articles`);
@@ -1138,7 +1185,7 @@ function App(){
         </div>}
         <div style={{...C.label,marginBottom:12}}>Select Source</div>
         <div style={{display:"grid",gap:10}}>
-          {Object.values(SOURCES).map(src=>{
+          {Object.values(SOURCES).filter(src=>src.id!=="manual"&&src.id!=="kb").map(src=>{
             const cached=getCache(src.id);
             return <div key={src.id} onClick={()=>openSource(src.id)}
               style={{...C.card,padding:"16px 18px",cursor:"pointer",display:"flex",alignItems:"center",gap:14,transition:"all 0.2s"}}
