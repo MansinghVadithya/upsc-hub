@@ -122,6 +122,26 @@ const fetchPexelsBg = async (articleTitle, categoryKw, key) => {
 // ── Helpers ─────────────────────────────────────────────────────────
 const ls  = (k,v) => {try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v);}catch{}};
 
+// Fast base64<->bytes for LARGE data (a multi-tens-of-MB PDF). The
+// per-character Uint8Array.from(...,c=>c.charCodeAt(0)) / forEach pattern
+// used elsewhere in this file is fine for small payloads (TTS audio,
+// avatar photos) but becomes pathologically slow — many minutes, with the
+// tab frozen the whole time — once the string gets this large. A plain
+// indexed loop avoids the per-element callback overhead entirely.
+const b64ToBytesFast = base64 => {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i=0; i<len; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+};
+const bytesToB64Fast = bytes => {
+  const CHUNK = 0x8000; // chunked to avoid String.fromCharCode's argument-count limit on large arrays
+  const parts = [];
+  for (let i=0; i<bytes.length; i+=CHUNK) parts.push(String.fromCharCode.apply(null, bytes.subarray(i,i+CHUNK)));
+  return btoa(parts.join(""));
+};
+
 // ── Knowledge Base storage (IndexedDB — PDFs are far too large for
 // localStorage's ~5-10MB cap). One object store, one record per uploaded
 // PDF: {id, name, uploadedAt, pageCount, toc, pdfBase64}. toc holds the
@@ -165,7 +185,7 @@ const kbLoadDoc = async(pdfBase64,fileId=null)=>{
   const { PDFDocument } = PDFLib;
   let doc = fileId && kbDocCache[fileId];
   if(!doc){
-    doc = await PDFDocument.load(Uint8Array.from(atob(pdfBase64),c=>c.charCodeAt(0)));
+    doc = await PDFDocument.load(b64ToBytesFast(pdfBase64));
     if(fileId) kbDocCache[fileId] = doc;
   }
   return doc;
@@ -181,8 +201,7 @@ const kbSlicePages=async(pdfBase64,startPage,endPage,fileId=null)=>{
   const pages=await out.copyPages(src,indices);
   pages.forEach(p=>out.addPage(p));
   const bytes=await out.save();
-  let bin="";bytes.forEach(b=>bin+=String.fromCharCode(b));
-  return btoa(bin);
+  return bytesToB64Fast(bytes);
 };
 const lsJ = (k,v) => {try{if(v===undefined){const r=localStorage.getItem(k);return r?JSON.parse(r):null;}localStorage.setItem(k,JSON.stringify(v));}catch{return null;}};
 
@@ -1047,13 +1066,14 @@ function App(){
       await kbPut(rec);
       setKbFiles(prev=>[rec,...prev]); // shows up immediately, even before ToC extraction finishes
 
-      setKbUploadStatus("Finding table of contents…");
+      setKbUploadStatus("Parsing PDF…");
       // Only the first ~10 pages (where a ToC almost always lives) ever
       // get sent to Gemini — never the whole file. Gemini's PDF handling
       // caps at 50MB per document regardless of upload method, so a large
       // compendium has to be pre-sliced locally before it ever reaches
       // the API, for this step and for every per-article open later.
       const tocSliceBase64 = await kbSlicePages(pdfBase64,1,10,id);
+      setKbUploadStatus("Finding table of contents…");
       const prompt="This is a government press-release compendium PDF. Find its Table of Contents (usually near the start) and list every article entry in it, with the exact page range each one spans in the actual document. If an entry's end page isn't explicit, use the page right before the next entry's start page. Output ONLY valid JSON, no other text:\n"+
         '{"articles":[{"title":"exact title as printed","startPage":number,"endPage":number}]}';
       const raw = await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"),4000,tocSliceBase64);
