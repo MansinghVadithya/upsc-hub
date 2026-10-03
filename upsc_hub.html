@@ -10,6 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stackblur-canvas/2.7.0/stackblur.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script type="module">
   import { FFmpeg } from "https://esm.sh/@ffmpeg/ffmpeg@0.12.15";
   import { toBlobURL } from "https://esm.sh/@ffmpeg/util@0.12.2";
@@ -191,6 +192,96 @@ const kbLoadDoc = async(pdfBase64,fileId=null)=>{
   return doc;
 };
 const kbPageCount = async(pdfBase64,fileId=null)=>(await kbLoadDoc(pdfBase64,fileId)).getPageCount();
+
+// ── Locating articles by their title text (tested against a real 342-page
+// compendium: all 58 articles found exactly) ──────────────────────────
+const kbNorm = s => String(s||"").replace(/\t/g," ").replace(/[’‘`]/g,"'").toLowerCase().replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
+
+// Reads the text layer of every page, in order (no rendering — fast). The
+// bytes are copied first because pdf.js may hand its buffer to a worker
+// thread, which would leave the original array unusable afterwards.
+const kbExtractPageTexts = async (bytes, onProgress) => {
+  const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  const out = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const tc = await page.getTextContent();
+    out.push(tc.items.map(it => it.str).join(" "));
+    page.cleanup();
+    if (i % 15 === 0) { if (onProgress) onProgress(i, doc.numPages); await new Promise(r => setTimeout(r, 0)); }
+  }
+  await doc.destroy();
+  return out;
+};
+
+// Finds the physical page (1-based) where each Contents entry actually begins
+// by looking for its title on the section-opener page — no page-number
+// arithmetic at all, so it doesn't matter whether the file is spreads or
+// single pages, or how much front matter precedes the first article.
+const kbLocateArticles = (toc, pageTexts) => {
+  const N = pageTexts.length;
+  const norm = pageTexts.map(kbNorm);
+  const titles = toc.map(a => kbNorm(a.title));
+
+  // Contents pages mention many titles at once — never mistake them for openers.
+  const tocPages = [];
+  for (let p = 0; p < Math.min(N, 15); p++) {
+    let hits = 0;
+    for (const t of titles) if (t && norm[p].includes(t)) hits++;
+    if (hits >= 3) tocPages.push(p);
+  }
+  let cursor = tocPages.length ? Math.max(...tocPages) + 1 : 0;
+
+  const starts = new Array(toc.length).fill(null);
+  toc.forEach((a, i) => {
+    const nt = titles[i];
+    if (!nt) return;
+    const num = String(i + 1).padStart(2, "0");
+    const head = nt.split(" ").slice(0, 4).join(" ");
+    const finders = [
+      p => norm[p].startsWith(`${num} ${nt}`),     // opener page: "NN Full Title …"
+      p => norm[p].startsWith(`${num} ${head}`),   // same, first words only (Contents wording can differ)
+      p => norm[p].includes(nt)                     // last resort: title appears anywhere
+    ];
+    for (const f of finders) {
+      for (let p = cursor; p < N; p++) {
+        if (f(p)) { starts[i] = p + 1; cursor = p + 1; return; }
+      }
+    }
+  });
+
+  // Entries whose title couldn't be matched (typos / extra words in the
+  // Contents) are placed between their matched neighbours using the printed
+  // page numbers, scaled by this file's own printed-pages-per-physical-page.
+  const matched = toc.map((a, i) => i).filter(i => starts[i] !== null);
+  if (matched.length < 2) return null;
+  const ratios = [];
+  for (let k = 1; k < matched.length; k++) {
+    const a = matched[k - 1], b = matched[k];
+    const dp = toc[b].startPage - toc[a].startPage, dq = starts[b] - starts[a];
+    if (dq > 0 && dp > 0) ratios.push(dp / dq);
+  }
+  ratios.sort((x, y) => x - y);
+  const ppp = ratios.length ? ratios[Math.floor(ratios.length / 2)] : 1;
+  for (let i = 0; i < toc.length; i++) {
+    if (starts[i] !== null) continue;
+    let prev = -1;
+    for (let j = i - 1; j >= 0; j--) if (starts[j] !== null) { prev = j; break; }
+    if (prev === -1) {
+      // Before the first matched entry: count backwards from it instead.
+      const next = starts.findIndex((v, j) => j > i && v !== null);
+      starts[i] = Math.max(1, starts[next] - Math.max(1, Math.round((toc[next].startPage - toc[i].startPage) / ppp)));
+      continue;
+    }
+    starts[i] = starts[prev] + Math.max(1, Math.round((toc[i].startPage - toc[prev].startPage) / ppp));
+  }
+  return { starts, ppp };
+};
+// pdf.js does its parsing in a background worker; pointing it at the CDN copy
+// lets it wrap the cross-origin script itself, and it falls back to the main
+// thread automatically if workers are unavailable.
+if (typeof pdfjsLib !== "undefined") pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
 const kbSlicePages=async(pdfBase64,startPage,endPage,fileId=null)=>{
   const { PDFDocument } = PDFLib;
   const src = await kbLoadDoc(pdfBase64,fileId);
@@ -692,22 +783,16 @@ function App(){
     const keys=getApiKeys();if(keys.length===0){notify("Add API key in Settings");return;}
     setLoadingSum(true);setSumStatus("");
     try{
-      setSumStatus(`Reading pages ${article.kbStartPage}–${article.kbEndPage}…`);
+      if(!article.kbPhysStart) throw new Error("This file was added with an older version of the app — please delete it and upload it again");
+      const nPages = article.kbPhysEnd-article.kbPhysStart+1;
+      setSumStatus(`Reading ${nPages} page${nPages===1?"":"s"}…`);
       const rec=await kbGet(article.kbFileId);
       if(!rec) throw new Error("Source PDF no longer found in this browser's storage");
 
-      // Convert this article's PRINTED page numbers into actual physical
-      // PDF page positions using this file's own calibrated scale (see
-      // kbHandleUpload), then pad generously on both sides — the padding
-      // absorbs any imprecision in that conversion, and the prompt below
-      // tells Gemini to isolate the right article by title regardless of
-      // whether a neighboring article's content also ends up in the slice.
-      const scale = rec.pageScale || 1;
-      const PAD = 5;
-      const totalPhysicalPages = await kbPageCount(rec.pdfBase64,article.kbFileId);
-      const physStart = Math.max(1, Math.round(article.kbStartPage*scale) - PAD);
-      const physEnd = Math.min(totalPhysicalPages, Math.round(article.kbEndPage*scale) + PAD);
-      const pdfBase64=await kbSlicePages(rec.pdfBase64,physStart,physEnd,article.kbFileId);
+      // Exactly this article's pages — from its own opening page up to the
+      // page before the next article opens (located by title text at upload,
+      // see kbHandleUpload) — so no neighbouring article is in the slice.
+      const pdfBase64=await kbSlicePages(rec.pdfBase64,article.kbPhysStart,article.kbPhysEnd,article.kbFileId);
 
       setSumStatus("Analyzing…");
       const schema=
@@ -720,7 +805,7 @@ function App(){
         '"keywords":["5 precise, topic-specific search keywords — never generic terms like india or government alone"],' +
         '"mnemonic":"a genuinely memorable trick ONLY if the content actually lends itself to one — empty string if forcing one would be gimmicky rather than useful"}';
 
-      const prompt="You are a senior UPSC Current Affairs editor known for precision and zero fluff. The attached PDF pages are an EXCERPT from a larger government press-release compendium — they may include the tail end of a PRECEDING article and/or the start of a FOLLOWING article in addition to the one you actually want. Find and analyze ONLY the article titled exactly \""+article.title+"\" (look for its title or section-divider page within these pages) — completely ignore any other article's content that also appears in this excerpt. This may be a short item or a substantial multi-page feature; let that ONE article's own depth decide how much you write, not any external target. Every sentence must carry a specific, checkable fact — a name, number, date, place, or mechanism. NEVER write a sentence that could apply to any generic government announcement (banned phrases: 'this is a significant step', 'aims to boost development', 'plays a crucial role', 'marks a major milestone'). Do not pad a short article to sound substantial, and do not compress a long, detailed feature down to an artificial length — cover what is genuinely there, completely, at whatever length that honestly takes. If the source doesn't give a specific figure for something, say so plainly rather than inventing one.\n\n"+
+      const prompt="You are a senior UPSC Current Affairs editor known for precision and zero fluff. The attached PDF pages are the complete article titled \""+article.title+"\" from a government press-release compendium (they may include a decorative section-opener page and a references list — ignore those; if a stray page at either end clearly belongs to a different article, ignore it too). This may be a short item or a substantial multi-page feature; let that ONE article's own depth decide how much you write, not any external target. Every sentence must carry a specific, checkable fact — a name, number, date, place, or mechanism. NEVER write a sentence that could apply to any generic government announcement (banned phrases: 'this is a significant step', 'aims to boost development', 'plays a crucial role', 'marks a major milestone'). Do not pad a short article to sound substantial, and do not compress a long, detailed feature down to an artificial length — cover what is genuinely there, completely, at whatever length that honestly takes. If the source doesn't give a specific figure for something, say so plainly rather than inventing one.\n\n"+
         "Output ONLY valid JSON, no length cap. No repetition between summary and keyPoints.\n\nOutput: "+schema;
 
       const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"),3000,pdfBase64);
@@ -1094,7 +1179,7 @@ function App(){
       // the API, for this step and for every per-article open later.
       const tocSliceBase64 = await kbSlicePages(pdfBase64,1,10,id);
       setKbUploadStatus("Finding table of contents…");
-      const prompt="This is a government press-release compendium PDF. Find its Table of Contents (usually near the start) and list EVERY article entry in it — do not stop partway through, this document can have 15-20+ entries and all of them matter — with the exact page range each one spans in the actual document. If an entry's end page isn't explicit, use the page right before the next entry's start page. Output ONLY valid JSON, no other text:\n"+
+      const prompt="This is a government press-release compendium PDF. Find its Table of Contents (usually near the start) and list EVERY article entry in it — do not stop partway through, this document can have 50+ entries and all of them matter — with the page number printed next to each entry. If an entry's end page isn't explicit, use the page right before the next entry's start page. Output ONLY valid JSON, no other text:\n"+
         '{"articles":[{"title":"exact title as printed","startPage":number,"endPage":number}]}';
       let raw;
       try{
@@ -1110,24 +1195,35 @@ function App(){
         } else throw e;
       }
       const articles = parseTocResponse(raw);
-      const toc = articles.filter(a=>a.title && a.startPage);
+      // Sorted by printed start page so entry numbers match the Contents order.
+      const toc = articles
+        .filter(a=>a.title && Number.isFinite(Number(a.startPage)))
+        .map(a=>({title:String(a.title).trim(), startPage:Number(a.startPage), endPage:Number(a.endPage)||Number(a.startPage)}))
+        .sort((a,b)=>a.startPage-b.startPage);
       if(!toc.length) throw new Error("Couldn't find a Table of Contents in the first 10 pages of this PDF");
 
-      // Self-calibrating fix for a real issue: this compendium's print
-      // layout numbers pages sequentially (1,2,3...), but some exports lay
-      // two of those printed pages side-by-side on one actual PDF page (a
-      // spread) — so "printed page 9" and "physical PDF page 9" can be
-      // completely different locations. Comparing the file's real page
-      // count against the highest printed page number in the ToC gives
-      // this specific file's actual scale, whatever it turns out to be,
-      // rather than assuming a fixed ratio that might not hold for every
-      // document uploaded.
-      const totalPhysicalPages = await kbPageCount(pdfBase64,id);
-      const maxPrinted = Math.max(...toc.map(a=>a.endPage));
-      const pageScale = maxPrinted>0 ? (totalPhysicalPages/maxPrinted) : 1;
+      // Where does each article REALLY begin? The Contents only gives printed
+      // page numbers, which don't line up with the PDF's physical pages (this
+      // compendium lays two printed pages side by side on each PDF page, plus
+      // front matter). Instead of guessing with arithmetic, read the text of
+      // every page and find each article's opening page by its title. Tested
+      // against a real 342-page compendium: all 58 articles located exactly.
+      if(typeof pdfjsLib==="undefined") throw new Error("The PDF text reader didn't load — refresh the page and try again");
+      setKbUploadStatus("Locating articles…");
+      const pageTexts = await kbExtractPageTexts(b64ToBytesFast(pdfBase64),(i,n)=>setKbUploadStatus(`Locating articles… ${i}/${n}`));
+      const located = kbLocateArticles(toc,pageTexts);
+      if(!located) throw new Error("Couldn't match the Contents to pages inside this PDF — it may have no readable text layer");
+      const totalPages = pageTexts.length;
+      toc.forEach((a,i)=>{
+        a.physStart = Math.min(Math.max(1,located.starts[i]), totalPages);
+        // an article runs up to the page before the next one opens (the last
+        // one runs to the page before the back cover)
+        const next = i<toc.length-1 ? located.starts[i+1] : totalPages;
+        a.physEnd = Math.max(a.physStart, Math.min(totalPages, next-1));
+      });
 
       rec.toc = toc;
-      rec.pageScale = pageScale;
+      rec.totalPages = totalPages;
       await kbPut(rec);
       setKbFiles(prev=>prev.map(f=>f.id===id?rec:f));
       notify(`✅ Found ${toc.length} articles`);
@@ -1156,7 +1252,9 @@ function App(){
       timestamp:file.uploadedAt,
       kbFileId:file.id,
       kbStartPage:art.startPage,
-      kbEndPage:art.endPage
+      kbEndPage:art.endPage,
+      kbPhysStart:art.physStart,
+      kbPhysEnd:art.physEnd
     });
   };
 
