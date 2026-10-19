@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>UPSC Current Affairs Hub</title>
+<title>Pocket Gazette — Official news, in plain English</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -838,12 +838,12 @@ function App(){
         "Each has: heading(8 words max), bullets(3 article-specific strings), emoji\n"+
         "Hook: also add subline(\""+srcName+" · "+article.date+"\")\n"+
         "Know the Terms: bullets = \"TERM: definition\" format, plain-language definitions anyone would understand\n"+
-        "caption: 200-250 char Instagram caption, general-audience tone, with emojis, a light call-to-action to follow, and 5 hashtags — mix of topic-specific tags (drawn from this story) and general current-affairs tags, never defaulting to generic #UPSC-style tags\n"+
+        "caption: 200-250 char Instagram caption, general-audience tone, with emojis, a light call-to-action to follow Pocket Gazette, and 5 hashtags — mix of topic-specific tags (drawn from this story) and general current-affairs tags, never defaulting to generic #UPSC-style tags\n"+
         "ytScenes: array of 6 to 8 scene objects for a general-audience news explainer — written the way a professional TV newsreader delivers a clear, engaging segment. NOT a movie trailer, NOT an exam-prep lecture. Any Indian viewer should follow it easily with zero prior context, whether or not they've heard of this scheme/story before.\n"+
         "Each scene object has ONE field:\n"+
         "  narration: ONE clear sentence (8-14 words), delivered the way a newsreader reads a headline — confident, active voice, no filler. Every sentence must carry a specific, checkable fact from the article (a name, number, date, or mechanism) — NEVER a generic filler line that could apply to any story (banned: 'this is an important development', 'this affects many people', 'this shows the government's commitment'). If a scene has nothing specific to add, cut it rather than padding the count. Scene 1 should open with the single most important or striking fact from the story, the way a bulletin leads with its top line — not a dramatic \"hook,\" just good news-writing.\n"+
         "  Together, the scenes MUST cover every point listed in keyPoints, each represented with its actual number/name/date intact — do not vague-ify a specific fact into a general statement for the sake of a shorter sentence."+(hasFullText?" Pull additional specific facts directly from the FULL ARTICLE TEXT above where they strengthen a scene, not only from the keyPoints list.":"")+" The substance should stay precise and exam-grade in accuracy, but NEVER mention \"UPSC,\" \"GS Paper,\" \"Mains,\" \"exam,\" or any exam-prep framing anywhere in the narration — nothing should sound like it's addressed only to aspirants.\n"+
-        "  The final scene must close with a natural call-to-action to follow the channel for more daily news explainers — general audience, no mention of UPSC or exams in this line.";
+        "  The final scene must close with a natural call-to-action to follow Pocket Gazette for more daily news explainers — general audience, no mention of UPSC or exams in this line.";
 
       const raw=await geminiCall(null,prompt,null,()=>notify("🔄 Switched to backup key"));
       const parsed=extractJSONObj(raw);
@@ -1291,7 +1291,8 @@ function App(){
       {splashStage===0
         ?<div key="s0" className="fade" style={{textAlign:"center"}}>
           <div style={{fontSize:44,marginBottom:14}}>🏛️</div>
-          <h1 style={{fontSize:24,fontWeight:800,background:"linear-gradient(130deg,#E2E2EE 40%,#A78BFA)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>UPSC Current Affairs Hub</h1>
+          <h1 style={{fontSize:24,fontWeight:800,background:"linear-gradient(130deg,#E2E2EE 40%,#A78BFA)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Pocket Gazette</h1>
+          <p style={{opacity:0.45,fontSize:13,marginTop:8}}>Official news, in plain English</p>
         </div>
         :<div key="s1" className="fade" style={{textAlign:"center"}}>
           <h1 style={{fontSize:22,fontWeight:700,color:"#E2E2EE"}}>{username?`Welcome, ${username}!`:"Welcome!"}</h1>
@@ -1306,8 +1307,8 @@ function App(){
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:24,paddingTop:8}}>
           <div>
             <div style={{fontSize:10,letterSpacing:3,color:"#818CF8",fontWeight:700,marginBottom:8,textTransform:"uppercase"}}>UPSC CSE 2026</div>
-            <h1 style={{fontSize:26,fontWeight:800,background:"linear-gradient(130deg,#E2E2EE 40%,#A78BFA)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:4}}>Current Affairs Hub</h1>
-            <p style={{opacity:0.35,fontSize:13}}>Live feeds · AI analysis · Instagram carousel · Drive sync</p>
+            <h1 style={{fontSize:26,fontWeight:800,background:"linear-gradient(130deg,#E2E2EE 40%,#A78BFA)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:4}}>Pocket Gazette</h1>
+            <p style={{opacity:0.35,fontSize:13}}>Official news, in plain English</p>
           </div>
           <button onClick={()=>setView("profile")} style={{width:44,height:44,borderRadius:"50%",border:"1px solid rgba(255,255,255,0.12)",background:avatarImg?`url(${avatarImg})`:"linear-gradient(135deg,#6366F1,#8B5CF6)",backgroundSize:"cover",backgroundPosition:"center",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:16}}>
             {!avatarImg&&(username?username.trim()[0].toUpperCase():"👤")}
